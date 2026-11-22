@@ -31,7 +31,7 @@
 
 services:
   backup-server:
-    image: ghcr.io/${CB_OWNER}/centralbackup-server:${CB_TAG}
+    image: ghcr.io/${CB_OWNER}/unseen-backup-server:${CB_TAG}
     container_name: backup-server
     restart: unless-stopped
     ports:
@@ -46,7 +46,7 @@ services:
       - backup-data:/data
 
   backup-agent:
-    image: ghcr.io/${CB_OWNER}/centralbackup-agent:${CB_TAG}
+    image: ghcr.io/${CB_OWNER}/unseen-backup-agent:${CB_TAG}
     container_name: backup-agent
     restart: unless-stopped
     environment:

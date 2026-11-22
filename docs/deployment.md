@@ -108,7 +108,7 @@ outside Portainer, which the UI marks as **limited** and refuses to edit.
 Both are solved by building in CI and deploying by pull:
 
 1. Push to GitHub. `.github/workflows/images.yml` builds and publishes
-   `ghcr.io/<owner>/centralbackup-server` and `…-agent`.
+   `ghcr.io/<owner>/unseen-backup-server` and `…-agent`.
 2. Make the two packages **public** (GitHub → your profile → Packages →
    each package → Package settings → Change visibility), or on the host run
    `docker login ghcr.io -u <user> -p <PAT-with-read:packages>`.

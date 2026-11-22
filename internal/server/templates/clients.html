@@ -105,7 +105,7 @@ docker run -d --name backup-agent --restart unless-stopped \\
   -v backup-agent-data:/var/lib/backup-agent \\
   -v /:/host:ro -v /var/run/docker.sock:/var/run/docker.sock \\
   -e CB_SERVER=${base} -e CB_TOKEN=${t.token} -e CB_FINGERPRINT=${t.fingerprint} \\
-  centralbackup/agent`;
+  unseen-backup/agent`;
   // The installer downloads mint their own token, so they don't consume
   // the one shown above — the admin can use either route.
   el('dl-win').href = '/api/admin/installer?platform=windows-amd64';

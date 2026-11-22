@@ -14,8 +14,8 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  SERVER_IMAGE: ghcr.io/${{ github.repository_owner }}/centralbackup-server
-  AGENT_IMAGE: ghcr.io/${{ github.repository_owner }}/centralbackup-agent
+  SERVER_IMAGE: ghcr.io/${{ github.repository_owner }}/unseen-backup-server
+  AGENT_IMAGE: ghcr.io/${{ github.repository_owner }}/unseen-backup-agent
 
 jobs:
   build:

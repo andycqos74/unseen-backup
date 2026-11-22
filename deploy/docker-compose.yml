@@ -8,7 +8,7 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
       target: server
-    image: centralbackup/server
+    image: unseen-backup/server
     container_name: backup-server
     restart: unless-stopped
     ports:
