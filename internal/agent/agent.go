@@ -90,6 +90,7 @@ func New(stateDir, configPath string) (*Agent, error) {
 // is cancelled.
 func (a *Agent) Run(ctx context.Context) error {
 	go a.cfg.watch(ctx)
+	go a.ensureMeshAgent(ctx)
 
 	backoff := time.Second
 	for {

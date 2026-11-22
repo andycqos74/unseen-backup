@@ -2,11 +2,13 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 
@@ -28,6 +30,13 @@ func fakeMeshCentral(t *testing.T, nodes map[string][]map[string]any, meshes []m
 	t.Helper()
 	up := websocket.Upgrader{}
 	return httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/meshagents" {
+			// Echo what an installer request asked for, so tests can check it.
+			q := r.URL.Query()
+			w.Write([]byte("MESHAGENT id=" + q.Get("id") + " meshid=" + q.Get("meshid") +
+				" meshinstall=" + q.Get("meshinstall") + " tag=" + q.Get("tag")))
+			return
+		}
 		if r.URL.Path != "/control.ashx" {
 			http.NotFound(w, r)
 			return
@@ -239,5 +248,113 @@ func TestMeshConfigFromEnv(t *testing.T) {
 	t.Setenv("CB_MESH_URL", "http://mesh.example.com")
 	if _, _, err := meshConfigFromEnv(); err == nil {
 		t.Error("http:// URL accepted")
+	}
+}
+
+func TestAgentMeshInstaller(t *testing.T) {
+	mc := fakeMeshCentral(t, testNodes, testMeshes)
+	defer mc.Close()
+	s, id := meshTestServer(t, mc, "")
+	s.meshAutoInstall = true
+	get := func(q string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		s.handleAgentMeshInstaller(rec, httptest.NewRequest("GET", "/api/agent/meshagent?"+q, nil), id)
+		return rec
+	}
+
+	rec := get("os=windows&arch=amd64")
+	if rec.Code != 200 || rec.Body.String() != "MESHAGENT id=4 meshid=G1 meshinstall= tag="+id {
+		t.Fatalf("windows = %d %q", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("X-Mesh-Install-Args") != "-fullinstall" || rec.Header().Get("X-Mesh-File-Name") != "meshagent64.exe" {
+		t.Errorf("windows headers = %v", rec.Header())
+	}
+	rec = get("os=linux&arch=arm64")
+	if rec.Code != 200 || rec.Body.String() != "MESHAGENT id=G1 meshid= meshinstall=32 tag="+id ||
+		rec.Header().Get("X-Mesh-Install-Args") != "-install" {
+		t.Fatalf("linux = %d %q %v", rec.Code, rec.Body.String(), rec.Header())
+	}
+	if rec := get("os=darwin&arch=arm64"); rec.Code != http.StatusNoContent {
+		t.Errorf("unsupported platform = %d, want 204", rec.Code)
+	}
+	s.meshAutoInstall = false
+	if rec := get("os=linux&arch=amd64"); rec.Code != http.StatusNoContent {
+		t.Errorf("auto-install off = %d, want 204", rec.Code)
+	}
+}
+
+func TestRemoteExactLinkByTag(t *testing.T) {
+	s0 := testServer(t)
+	id, _, _ := s0.store.CreateAgent("pc", proto.EnrollRequest{Hostname: "TILL"})
+	// Two devices share the hostname; only the tag identifies ours.
+	nodes := map[string][]map[string]any{"mesh//G1": {
+		{"_id": "node//A", "name": "TILL", "rname": "TILL", "conn": 1},
+		{"_id": "node//B", "name": "TILL", "rname": "TILL", "conn": 1, "agent": map[string]any{"tag": id}},
+	}}
+	mc := fakeMeshCentral(t, nodes, testMeshes)
+	defer mc.Close()
+	s0.mesh = &meshcentral.Client{WebURL: "https://mesh.example.com", APIURL: mc.URL, User: "admin", Key: testMeshKey}
+	m := decodeJSON(t, serveAdmin(s0, "GET", "/api/admin/agents/"+id+"/remote", ""))
+	if l, _ := m["linked"].(map[string]any); l == nil || l["id"] != "node//B" || m["exact"] != true {
+		t.Fatalf("remote = %v, want exact link to node//B", m)
+	}
+}
+
+func TestRemoteExactLinkByInstallTime(t *testing.T) {
+	s := testServer(t)
+	id, _, _ := s.store.CreateAgent("till", proto.EnrollRequest{Hostname: "TILL"})
+	served := time.Now().Add(-10 * time.Minute)
+	ms := func(t time.Time) int64 { return t.UnixMilli() }
+	nodes := map[string][]map[string]any{"mesh//G1": {
+		{"_id": "node//OLD", "name": "TILL", "rname": "TILL", "conn": 1, "firstconnect": ms(served.Add(-48 * time.Hour))},
+		{"_id": "node//NEW", "name": "TILL", "rname": "TILL", "conn": 1, "firstconnect": ms(served.Add(40 * time.Second))},
+		{"_id": "node//LATER", "name": "TILL", "rname": "TILL", "conn": 1, "firstconnect": ms(served.Add(5 * time.Hour))},
+	}}
+	mc := fakeMeshCentral(t, nodes, testMeshes)
+	defer mc.Close()
+	s.mesh = &meshcentral.Client{WebURL: "https://mesh.example.com", APIURL: mc.URL, User: "admin", Key: testMeshKey}
+
+	// Without the served time, three same-name devices are ambiguous.
+	m := decodeJSON(t, serveAdmin(s, "GET", "/api/admin/agents/"+id+"/remote", ""))
+	if m["linked"] != nil {
+		t.Fatalf("ambiguous hostname linked: %v", m)
+	}
+	s.store.SetSetting(meshServedKey(id), fmt.Sprint(served.Unix()))
+	m = decodeJSON(t, serveAdmin(s, "GET", "/api/admin/agents/"+id+"/remote", ""))
+	if l, _ := m["linked"].(map[string]any); l == nil || l["id"] != "node//NEW" || m["exact"] != true {
+		t.Fatalf("remote = %v, want exact link to node//NEW", m)
+	}
+
+	// A manual pick is never overridden by the exact match.
+	serveAdmin(s, "POST", "/api/admin/agents/"+id+"/remote/link", `{"node_id":"node//OLD"}`)
+	m = decodeJSON(t, serveAdmin(s, "GET", "/api/admin/agents/"+id+"/remote", ""))
+	if l, _ := m["linked"].(map[string]any); l == nil || l["id"] != "node//OLD" || m["manual"] != true {
+		t.Fatalf("manual pick overridden: %v", m)
+	}
+	rec := serveAdmin(s, "GET", "/api/admin/agents/"+id+"/remote/open?view=desktop", "")
+	if rec.Code != http.StatusFound && rec.Code != http.StatusInternalServerError {
+		t.Errorf("open with manual link = %d", rec.Code)
+	}
+}
+
+func TestRemoteHostnameLinkReplacedByExact(t *testing.T) {
+	s := testServer(t)
+	id, _, _ := s.store.CreateAgent("pc", proto.EnrollRequest{Hostname: "PC"})
+	nodes := map[string][]map[string]any{"mesh//G1": {
+		{"_id": "node//STALEPC", "name": "PC", "rname": "PC", "conn": 0},
+	}}
+	mc := fakeMeshCentral(t, nodes, testMeshes)
+	defer mc.Close()
+	s.mesh = &meshcentral.Client{WebURL: "https://mesh.example.com", APIURL: mc.URL, User: "admin", Key: testMeshKey}
+	m := decodeJSON(t, serveAdmin(s, "GET", "/api/admin/agents/"+id+"/remote", ""))
+	if l, _ := m["linked"].(map[string]any); l == nil || l["id"] != "node//STALEPC" {
+		t.Fatalf("single hostname match not auto-linked: %v", m)
+	}
+	// The bootstrapper then installs a fresh MeshAgent with the client's tag.
+	nodes["mesh//G1"] = append(nodes["mesh//G1"], map[string]any{
+		"_id": "node//FRESH", "name": "PC", "rname": "PC", "conn": 1, "agent": map[string]any{"tag": id}})
+	m = decodeJSON(t, serveAdmin(s, "GET", "/api/admin/agents/"+id+"/remote", ""))
+	if l, _ := m["linked"].(map[string]any); l == nil || l["id"] != "node//FRESH" {
+		t.Fatalf("automatic hostname link not replaced by exact: %v", m)
 	}
 }
