@@ -72,11 +72,36 @@ Other settings: `CB_KOPIA_LISTEN` (default `:51515`), `CB_KOPIA_REPO`
 > **The repository password cannot be recovered.** Lose `CB_KOPIA_PASSWORD`
 > and every Kopia backup is unreadable. Keep it in Vaultwarden.
 
+## Off-site copy (3-2-1)
+
+Set `CB_KOPIA_SYNC_TO` and the server mirrors the repository there with
+`kopia repository sync-to … --delete` every `CB_KOPIA_SYNC_INTERVAL`
+(default `6h`; first copy a few minutes after start). The copy is the same
+encrypted repository — the storage provider never sees plaintext — and
+*Settings → Off-site copy* shows the last result.
+
+Any S3-compatible store (Backblaze B2, Cloudflare R2, Wasabi, AWS):
+
+```bash
+CB_KOPIA_SYNC_TO="s3 --bucket=my-backups --endpoint=s3.eu-central-003.backblazeb2.com --prefix=unseen/"
+AWS_ACCESS_KEY_ID=…          # Vaultwarden; never put keys in CB_KOPIA_SYNC_TO
+AWS_SECRET_ACCESS_KEY=…
+```
+
+Other `sync-to` targets (`filesystem --path=/mnt/nas/kopia`, `sftp …`,
+`b2 …`, `azure …`, `gcs …`) work the same way; keep secrets in the
+environment variables Kopia reads for them.
+
+**Disaster recovery**: on any machine with Kopia, `kopia repository connect
+s3 --bucket=… --endpoint=… --prefix=…` with `CB_KOPIA_PASSWORD`, then
+`kopia snapshot list --all` and `kopia snapshot restore`. Snapshots carry
+`agent:`, `job:` and `run:` tags to tell clients apart.
+
 ## Notes and limits
 
-- **Repository on local disk only (for now).** The repository lives in the
-  server's data volume. Off-site copies (`kopia repository sync-to` to
-  B2/R2/S3) and S3-backed repositories are not wired into the GUI yet.
+- **The primary repository is on the server's disk.** The off-site copy
+  above covers losing the server. An S3-backed *primary* repository isn't
+  wired up.
 - **Existing clients need the new agent.** Agents don't self-update; a client
   gets Kopia (and the MeshAgent bootstrapper) after reinstalling the
   agent from the enroll dialog.
@@ -96,5 +121,6 @@ Other settings: `CB_KOPIA_LISTEN` (default `:51515`), `CB_KOPIA_REPO`
 split-listener mode) runs a real server, agent and Kopia: provisioning, a
 backup with excludes applied as policy, browse, single-file and zip download,
 full and selected-folder restore, the client being denied deletion of its own
-snapshot, and deletion from the GUI. Windows (VSS, paths) is covered by build
+snapshot, the off-site copy (to a filesystem target) opening as a complete
+repository with the snapshot, and deletion from the GUI. Windows (VSS, paths) is covered by build
 and code review only.

@@ -83,6 +83,9 @@ type kopiaEngine struct {
 	controlPass string
 	agentURL    string
 
+	syncTarget string // CB_KOPIA_SYNC_TO (off-site copy), set by kopiaSyncLoop
+	syncEvery  time.Duration
+
 	treeMu    sync.Mutex
 	treeCache map[string][]proto.ManifestEntry
 	treeOrder []string
@@ -153,7 +156,11 @@ func (s *Server) initKopia(certFile, keyFile string) error {
 		return err
 	}
 	s.kopia = k
+	if t := strings.TrimSpace(os.Getenv("CB_KOPIA_SYNC_TO")); t != "" {
+		k.syncTarget = t
+	}
 	go k.superviseServer()
+	go s.kopiaSyncLoop()
 	log.Printf("kopia: repository %s, repository server on %s (agents use %s)", cfg.Repo, cfg.Listen, k.agentURL)
 	return nil
 }
@@ -608,4 +615,88 @@ func (s *Server) deleteKopiaSnapshot(sn *store.Snapshot) error {
 		}
 	}
 	return s.store.DeleteSnapshot(sn.ID)
+}
+
+// Off-site copy: `kopia repository sync-to` mirrors the (encrypted)
+// repository to a second location on a schedule. CB_KOPIA_SYNC_TO holds the
+// sync-to target as kopia arguments, e.g.
+//
+//	s3 --bucket=my-backups --endpoint=s3.eu-central-003.backblazeb2.com --prefix=unseen/
+//
+// with credentials in the environment (AWS_ACCESS_KEY_ID /
+// AWS_SECRET_ACCESS_KEY for any S3-compatible store), never in the
+// arguments. CB_KOPIA_SYNC_INTERVAL (default 6h) sets the cadence. The copy
+// is a complete repository: connect to it with the same password to restore
+// if the server is lost.
+
+type kopiaSyncStatus struct {
+	Target   string `json:"target"`
+	LastRun  int64  `json:"last_run,omitempty"`
+	LastOK   int64  `json:"last_ok,omitempty"`
+	LastErr  string `json:"last_error,omitempty"`
+	Interval string `json:"interval"`
+}
+
+func (s *Server) kopiaSyncLoop() {
+	k := s.kopia
+	target := strings.TrimSpace(os.Getenv("CB_KOPIA_SYNC_TO"))
+	if k == nil || target == "" {
+		return
+	}
+	every, err := time.ParseDuration(strings.TrimSpace(os.Getenv("CB_KOPIA_SYNC_INTERVAL")))
+	if err != nil || every < 10*time.Minute {
+		every = 6 * time.Hour
+	}
+	k.syncTarget, k.syncEvery = target, every
+	delay := 2 * time.Minute // let the server settle after start
+	if d, err := time.ParseDuration(os.Getenv("CB_KOPIA_SYNC_DELAY")); err == nil {
+		delay = d // tests
+	}
+	time.Sleep(delay)
+	for {
+		s.kopiaSyncOnce()
+		time.Sleep(every)
+	}
+}
+
+func (s *Server) kopiaSyncOnce() {
+	k := s.kopia
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Hour)
+	defer cancel()
+	now := time.Now().Unix()
+	s.store.SetSetting("kopia_sync_last_run", fmt.Sprint(now))
+	args := append([]string{"repository", "sync-to"}, strings.Fields(k.syncTarget)...)
+	args = append(args, "--delete", "--parallel=4")
+	if _, err := k.cli.Run(ctx, args...); err != nil {
+		log.Printf("kopia: off-site sync failed: %v", err)
+		s.store.SetSetting("kopia_sync_error", err.Error())
+		return
+	}
+	s.store.SetSetting("kopia_sync_last_ok", fmt.Sprint(now))
+	s.store.SetSetting("kopia_sync_error", "")
+	log.Printf("kopia: off-site copy up to date (%s)", strings.Fields(k.syncTarget)[0])
+}
+
+func (s *Server) kopiaSyncStatus() *kopiaSyncStatus {
+	if s.kopia == nil || s.kopia.syncTarget == "" {
+		return nil
+	}
+	st := &kopiaSyncStatus{Interval: s.kopia.syncEvery.String()}
+	// Show the backend and bucket/path, not every flag.
+	for _, f := range strings.Fields(s.kopia.syncTarget) {
+		if !strings.HasPrefix(f, "-") || strings.HasPrefix(f, "--bucket=") || strings.HasPrefix(f, "--path=") ||
+			strings.HasPrefix(f, "--prefix=") || strings.HasPrefix(f, "--endpoint=") {
+			st.Target += f + " "
+		}
+	}
+	st.Target = strings.TrimSpace(st.Target)
+	get := func(k string) int64 {
+		v, _ := s.store.GetSetting(k)
+		var n int64
+		fmt.Sscan(v, &n)
+		return n
+	}
+	st.LastRun, st.LastOK = get("kopia_sync_last_run"), get("kopia_sync_last_ok")
+	st.LastErr, _ = s.store.GetSetting("kopia_sync_error")
+	return st
 }

@@ -48,6 +48,10 @@ services:
       # --- Kopia backup engine (see docs/kopia.md). Unset = off.
       CB_KOPIA_PASSWORD: ${CB_KOPIA_PASSWORD:-}   # repository password: openssl rand -hex 32 (Vaultwarden!)
       CB_KOPIA_URL: ${CB_KOPIA_URL:-}             # e.g. https://agents.example.com:51515 (default: agent host + 51515)
+      CB_KOPIA_SYNC_TO: ${CB_KOPIA_SYNC_TO:-}     # off-site copy, e.g. "s3 --bucket=b --endpoint=s3.eu-central-003.backblazeb2.com --prefix=unseen/"
+      CB_KOPIA_SYNC_INTERVAL: ${CB_KOPIA_SYNC_INTERVAL:-}  # default 6h
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}             # off-site S3 credentials (Vaultwarden)
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       # --- Optional: MeshCentral remote access (see docs/remote-access.md).
       # Unset = feature off.
       CB_MESH_URL: ${CB_MESH_URL:-}               # e.g. https://mesh.example.com (UI via tunnel)

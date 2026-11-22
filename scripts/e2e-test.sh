@@ -23,7 +23,8 @@ fi
 KOPIA_ENV=()
 if [ -n "${KOPIA_BIN:-}" ]; then
     KOPIA_ENV=(CB_KOPIA_PASSWORD=e2e-repo-password CB_KOPIA_BIN="$KOPIA_BIN"
-               CB_KOPIA_LISTEN=127.0.0.1:18515 CB_AGENT_BIN_DIR="__WORK__/agents")
+               CB_KOPIA_LISTEN=127.0.0.1:18515 CB_AGENT_BIN_DIR="__WORK__/agents"
+               CB_KOPIA_SYNC_TO="filesystem --path=__WORK__/offsite" CB_KOPIA_SYNC_INTERVAL=10m CB_KOPIA_SYNC_DELAY=20s)
 fi
 WORK="$(mktemp -d)"
 JAR="$WORK/cookies.txt"
@@ -66,6 +67,7 @@ say "Starting server"
 mkdir -p "$WORK/data" "$WORK/agents"
 if [ -n "${KOPIA_BIN:-}" ]; then
     cp "$KOPIA_BIN" "$WORK/agents/kopia-$(go env GOOS)-$(go env GOARCH)"
+    mkdir -p "$WORK/offsite"
     KOPIA_ENV=("${KOPIA_ENV[@]/__WORK__/$WORK}")
 fi
 env "${SPLIT_ENV[@]}" "${KOPIA_ENV[@]}" CB_DATA_DIR="$WORK/data" CB_LISTEN="127.0.0.1:$PORT" \
@@ -397,6 +399,14 @@ assert big and z.read(big[0]) == open('$FIX/sub/big.bin','rb').read(), z.namelis
     fi
     grep -qi "access denied" "$WORK/kdel.out" || { cat "$WORK/kdel.out"; fail "unexpected delete failure"; }
     pass "client is append-only (snapshot delete denied)"
+
+    synced() { capi GET /api/admin/settings | jq -e '.kopia_sync.last_ok > 0' >/dev/null; }
+    wait_for 90 "off-site copy" synced
+    KOPIA_PASSWORD=e2e-repo-password KOPIA_CHECK_FOR_UPDATES=false "$KOPIA_BIN" --config-file="$WORK/offsite.config" \
+        repository connect filesystem --path="$WORK/offsite" >/dev/null 2>&1 || fail "off-site copy is not an openable repository"
+    KOPIA_PASSWORD=e2e-repo-password KOPIA_CHECK_FOR_UPDATES=false "$KOPIA_BIN" --config-file="$WORK/offsite.config" \
+        snapshot list --all --json | jq -e --arg id "$KID" 'map(.id) | index($id)' >/dev/null || fail "off-site copy lacks the snapshot"
+    pass "off-site copy (sync-to) is a complete repository with the snapshot"
 
     capi DELETE "/api/admin/snapshots/$KSNAP" >/dev/null
     capi GET "/api/admin/snapshots?agent=$AGENT_ID" | jq -e --arg id "$KSNAP" 'map(select(.ID == $id)) | length == 0' >/dev/null || fail "kopia snapshot not deleted"
