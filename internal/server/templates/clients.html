@@ -46,7 +46,9 @@ Linux:        chmod +x backup-agent-installer &amp;&amp; sudo ./backup-agent-ins
         files. It joins device group <b id="mesh-group"></b> and links to this
         client by hostname.</p>
       <div class="row"><a class="btn" id="mesh-win" href="#">MeshAgent for Windows (x64)</a></div>
-      <p class="muted">Run it as Administrator and click <b>Install</b> (silent: run it with <code>-fullinstall</code>).</p>
+      <p class="muted">Run it as Administrator and click <b>Install</b> (silent: run it with <code>-fullinstall</code>).
+        To fetch it on the client without signing in (self-signed certificate):</p>
+      <pre id="mesh-win-direct" class="code"></pre>
       <p>Linux (x64 or arm64):</p>
       <pre id="mesh-linux" class="code"></pre>
     </div>
@@ -88,6 +90,7 @@ async function loadMeshInstall() {
   if (m.error) return;
   el('mesh-group').textContent = m.group;
   el('mesh-win').href = m.windows_url;
+  el('mesh-win-direct').textContent = m.windows_direct_url;
   el('mesh-linux').textContent = m.linux_cmd;
 }
 async function newToken() {

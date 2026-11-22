@@ -126,13 +126,26 @@ func hexNodeID(nodeID string) (string, error) {
 }
 
 // WindowsInstallerURL is the MeshAgent download for Windows x64 with the
-// device group's settings embedded (agent type 4, MeshService64.exe).
+// device group's settings embedded (agent type 4, MeshService64.exe), from
+// the agent-only port: reachable without the tunnel, for scripted installs,
+// but behind MeshCentral's self-signed certificate.
 func (c *Client) WindowsInstallerURL(meshID string) string {
+	return strings.TrimRight(c.agentBase(), "/") + "/meshagents?" + windowsQuery(meshID)
+}
+
+// WindowsBrowserURL is the same download from the MeshCentral UI origin (via
+// the tunnel, so no certificate warning in the admin's browser). The
+// embedded settings still point the agent at the agent-only port.
+func (c *Client) WindowsBrowserURL(meshID string) string {
+	return strings.TrimRight(c.WebURL, "/") + "/meshagents?" + windowsQuery(meshID)
+}
+
+func windowsQuery(meshID string) string {
 	q := url.Values{}
 	q.Set("id", "4")
 	q.Set("meshid", ShortID(meshID))
 	q.Set("installflags", "0")
-	return strings.TrimRight(c.agentBase(), "/") + "/meshagents?" + q.Encode()
+	return q.Encode()
 }
 
 // LinuxInstallCommand is a one-liner that installs MeshAgent on Linux into

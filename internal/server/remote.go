@@ -133,7 +133,8 @@ func (s *Server) handleMeshInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out["group"] = g.Name
-	out["windows_url"] = s.mesh.WindowsInstallerURL(g.ID)
+	out["windows_url"] = s.mesh.WindowsBrowserURL(g.ID)
+	out["windows_direct_url"] = s.mesh.WindowsInstallerURL(g.ID)
 	out["linux_cmd"] = s.mesh.LinuxInstallCommand(g.ID)
 	writeJSON(w, http.StatusOK, out)
 }

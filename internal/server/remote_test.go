@@ -182,8 +182,11 @@ func TestMeshInfoInstallers(t *testing.T) {
 	if m["group"] != "Office" || m["error"] != nil {
 		t.Fatalf("mesh info = %v", m)
 	}
-	if !strings.HasPrefix(m["windows_url"].(string), "https://agents.example.com:4443/meshagents?id=4&") {
-		t.Errorf("windows_url = %v", m["windows_url"])
+	if !strings.HasPrefix(m["windows_url"].(string), "https://mesh.example.com/meshagents?id=4&") {
+		t.Errorf("windows_url = %v, want the UI origin", m["windows_url"])
+	}
+	if !strings.HasPrefix(m["windows_direct_url"].(string), "https://agents.example.com:4443/meshagents?id=4&") {
+		t.Errorf("windows_direct_url = %v, want the agent port", m["windows_direct_url"])
 	}
 
 	s.meshGroupName = "Nope"

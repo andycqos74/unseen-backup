@@ -50,6 +50,24 @@ DNS / tunnel:
 | `backup-admin.example.com` | Tunnel public hostname + Access | `https://backup-server:8444`, No TLS Verify |
 | `mesh.example.com` | Tunnel public hostname + Access | `https://meshcentral:443`, No TLS Verify |
 
+**How cloudflared reaches the two UIs.** The service names above
+(`backup-server`, `meshcentral`) only resolve if cloudflared is on the same
+Docker network as these containers. Either add your shared tunnel network to
+both services (e.g. an external network `tunnel` that cloudflared is also on:
+`networks: [default, tunnel]` plus `networks: {tunnel: {external: true}}`),
+or, with cloudflared running on the host, use `https://127.0.0.1:8444` and
+`https://127.0.0.1:8445` — the compose files publish both on localhost only.
+
+**Egress.** MeshCentral fetches agent binaries on its first start, so its
+container needs outbound internet access (don't put it only on an
+`internal: true` network).
+
+**One Access session for both hostnames.** The MeshCentral token lives for 2
+minutes. If clicking *Desktop* first triggers a Cloudflare Access sign-in for
+`mesh.example.com` that takes longer, you land on MeshCentral's own login
+page — just click the button again. Putting both admin hostnames in the same
+Access application avoids the second sign-in.
+
 Open TCP **4443** (as well as 8443) in both the Fasthosts cloud-panel firewall
 and ufw. Docker-published ports bypass ufw, so the cloud firewall is the one
 that actually filters.
@@ -135,11 +153,15 @@ From the backup server container, the API should answer (look for
 
 ## Tested
 
-Against MeshCentral 1.3.1 (run from source) with this configuration: token
+Run against MeshCentral from source (master at `7c17f6d`, version 1.3.1 plus
+later fixes); every behaviour relied on here was then re-checked in the
+`1.3.1` release tag the stack pins, and the `ghcr.io/ylianst/meshcentral:1.3.1`
+image was confirmed to exist. Covered: token
 interop both ways with MeshCentral's `encodeCookie`/`decodeCookie`; single-use
 rejection on reuse; control API listing groups and devices; wrong-key refusal;
 Windows and Linux MeshAgent downloads from the agent-only port (the UI returns
-404 there); a real Linux MeshAgent connecting through the agent port; the
+404 there) — the enroll dialog's Windows *button* uses the UI origin instead,
+so the admin's browser sees the tunnel's certificate; a real Linux MeshAgent connecting through the agent port; the
 client page auto-linking by hostname; and, in a browser, the
 Desktop/Terminal/Files buttons landing signed in on the right device's tab,
 with a live terminal session relayed through the agent port. (A remote
