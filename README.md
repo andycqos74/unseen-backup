@@ -50,6 +50,10 @@ compressed and deduplicated, stored on the server's local storage.
   (**PowerShell** or **cmd** on Windows, **sh** on Linux/macOS) and watch
   stdout/stderr stream back live. Runs in the background as the service
   account; cancel kills the whole process tree.
+- **Remote access** (optional): a MeshCentral service in the same stack
+  gives **Desktop / Terminal / Files** buttons on each client page — one
+  click signs you in to MeshCentral on that device. See
+  [docs/remote-access.md](docs/remote-access.md).
 - **Docker-aware**: containerized agent for Docker hosts with pre/post
   hooks (e.g. `pg_dump` before backup) and host-volume access. The job
   editor lists the client's **containers as tick-boxes**, grouped by

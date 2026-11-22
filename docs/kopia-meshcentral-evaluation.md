@@ -216,9 +216,12 @@ the backup transport.**
   page then shows *Desktop*, *Terminal* and *Files* buttons, opening
   MeshCentral at that node in an iframe or a new tab (`viewmode` URL
   parameters select the tab for that node).
-- **Token lifetime.** URL login tokens encrypted with the server's
-  `loginTokenKey` (`?login=…`) expire after **2 minutes** by default (plus 30 s
-  clock-skew allowance). The generator can encode its own `expire` (minutes;
+- **Token lifetime.** Correction from reading MeshCentral 1.3.1's source:
+  the web root decodes `?login=` tokens with a **60-minute** timeout, not 2.
+  A token's own `expire` (minutes) overrides that, and a `once` value makes it
+  single-use; the implementation uses `expire: 2` plus `once` (see
+  [remote-access.md](remote-access.md)). The 2-minute figure applies to cookies
+  decoded without an explicit timeout. The generator can encode its own `expire` (minutes;
   0 = never). Once used, the browser holds a normal MeshCentral session
   cookie, so a short token is right: the controller mints one per click,
   as Tactical RMM does. Account-level tokens (*My Account → Login tokens*,
@@ -370,7 +373,7 @@ Things to watch:
 
 | Phase | Work | Result |
 |---|---|---|
-| 1 | **Done:** split the controller into agent and admin listeners with two URLs (§7). Next: add MeshCentral to the stack and put the UIs behind the tunnel and Access. Install MeshAgent from the bootstrapper. Add Desktop/Terminal buttons on the client page. | Remote access in one console. No engine risk. |
+| 1 | **Done:** split the controller into agent and admin listeners with two URLs (§7); MeshCentral in the stack with Desktop/Terminal/Files buttons and MeshAgent install links ([remote-access.md](remote-access.md)). **Next:** the bootstrapper — the backup agent installing MeshAgent itself. Original plan: add MeshCentral to the stack and put the UIs behind the tunnel and Access. Install MeshAgent from the bootstrapper. Add Desktop/Terminal buttons on the client page. | Remote access in one console. No engine risk. |
 | 2 | Confirm Kopia's VSS policy and repository-server ACLs on a Windows 10 test box. Add the Kopia server container. Add a second engine to the agent (option A) chosen per job. The controller provisions Kopia users and policies and lists Kopia snapshots alongside existing ones. | Both engines run in parallel. New jobs use Kopia. |
 | 3 | Port restore (to client, and browser download) to Kopia. Make Kopia the default engine. Set up `sync-to` for an off-site mirror. Keep the legacy engine only for the Windows 7 build. | Old snapshots age out, and engine code shrinks. |
 | 4 (optional) | Headscale for zero public ports. Code-signed installer. Agent self-update. | Hardening. |

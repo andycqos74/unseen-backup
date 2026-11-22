@@ -38,6 +38,20 @@ Linux:        chmod +x backup-agent-installer &amp;&amp; sudo ./backup-agent-ins
   <p class="muted">Each download carries its own single-use token, valid 24
     hours. Downloading again issues a new one.</p>
 
+  <div id="mesh-install" hidden>
+    <h3>Remote access agent (MeshCentral)</h3>
+    <p class="muted" id="mesh-err" hidden></p>
+    <div id="mesh-ok" hidden>
+      <p>Install MeshAgent on the client too, for remote desktop, terminal and
+        files. It joins device group <b id="mesh-group"></b> and links to this
+        client by hostname.</p>
+      <div class="row"><a class="btn" id="mesh-win" href="#">MeshAgent for Windows (x64)</a></div>
+      <p class="muted">Run it as Administrator and click <b>Install</b> (silent: run it with <code>-fullinstall</code>).</p>
+      <p>Linux (x64 or arm64):</p>
+      <pre id="mesh-linux" class="code"></pre>
+    </div>
+  </div>
+
   <h3>Or run a command instead</h3>
   <p>Run this on the client within <b>24 hours</b> (one-time token):</p>
   <h3>Ubuntu / Linux</h3>
@@ -63,6 +77,18 @@ async function load() {
     `<a href="/clients/${a.ID}">${esc(a.Name)}</a>`,
     esc(a.Hostname), esc(a.OS + '/' + a.Arch), esc(a.Version), fmtTime(a.LastSeen),
   ]), 'No clients enrolled yet — click “Enroll new client”.');
+}
+async function loadMeshInstall() {
+  const m = await api('GET', '/api/admin/mesh');
+  el('mesh-install').hidden = !m.enabled;
+  if (!m.enabled) return;
+  el('mesh-err').hidden = !m.error;
+  el('mesh-err').textContent = m.error ? 'MeshCentral: ' + m.error : '';
+  el('mesh-ok').hidden = !!m.error;
+  if (m.error) return;
+  el('mesh-group').textContent = m.group;
+  el('mesh-win').href = m.windows_url;
+  el('mesh-linux').textContent = m.linux_cmd;
 }
 async function newToken() {
   const t = await api('POST', '/api/admin/tokens', {note: ''});
@@ -115,6 +141,7 @@ docker run -d --name backup-agent --restart unless-stopped \\
   el('dl-linux-arm').href = '/api/admin/installer?platform=linux-arm64';
   el('token-fp').textContent = t.fingerprint;
   el('token-dlg').showModal();
+  loadMeshInstall();
 }
 load();
 setInterval(load, 5000);
