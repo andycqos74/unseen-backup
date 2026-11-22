@@ -49,6 +49,7 @@ const (
 	MsgJobsUpdate     = "jobs_update"
 	MsgRunBackup      = "run_backup"
 	MsgKopiaConfig    = "kopia_config"
+	MsgAgentUpdate    = "agent_update"
 	MsgRestore        = "restore"
 	MsgCancelRun      = "cancel_run"
 	MsgDiscoverDocker = "discover_docker"
@@ -164,6 +165,17 @@ type Hello struct {
 	// Caps lists optional abilities, e.g. CapKopia when Kopia runs on this
 	// platform. Older agents send none.
 	Caps []string `json:"caps,omitempty"`
+	// ExeSHA256 is the SHA-256 of the agent's executable image (without any
+	// appended enrollment); Flavor is "legacy" for the Go 1.20 Windows 7
+	// build. Together they let the server offer a self-update.
+	ExeSHA256 string `json:"exe_sha256,omitempty"`
+	Flavor    string `json:"flavor,omitempty"`
+}
+
+// AgentUpdate tells an agent a newer build is available from
+// GET /api/agent/update. The agent installs it when idle and restarts.
+type AgentUpdate struct {
+	SHA256 string `json:"sha256"`
 }
 
 // Engines and capabilities.

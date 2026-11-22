@@ -113,3 +113,34 @@ func ReadSelf() (Enrollment, bool, error) {
 	}
 	return Read(exe)
 }
+
+// ImageSize returns the length of the executable image at path, i.e. the
+// file size without any appended enrollment. Self-update compares this part
+// against the server's plain binary, so an installer copy (which carries
+// enrollment) isn't seen as outdated.
+func ImageSize(path string) (int64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	if st.Size() < footerLen {
+		return st.Size(), nil
+	}
+	footer := make([]byte, footerLen)
+	if _, err := f.ReadAt(footer, st.Size()-footerLen); err != nil {
+		return 0, err
+	}
+	if [16]byte(footer[8:]) != magic {
+		return st.Size(), nil
+	}
+	n := int64(binary.BigEndian.Uint64(footer[:8]))
+	if n <= 0 || n > maxLen || st.Size()-footerLen-n < 0 {
+		return st.Size(), nil
+	}
+	return st.Size() - footerLen - n, nil
+}

@@ -50,6 +50,9 @@ compressed and deduplicated, stored on the server's local storage.
   (**PowerShell** or **cmd** on Windows, **sh** on Linux/macOS) and watch
   stdout/stderr stream back live. Runs in the background as the service
   account; cancel kills the whole process tree.
+- **Agent self-update**: agents update themselves to the server's build when
+  idle and restart through their service manager. See
+  [docs/operations.md](docs/operations.md#agent-self-update).
 - **Kopia engine** (optional, recommended): jobs can back up with Kopia —
   chunk-level dedup, zstd, encrypted repository, Windows VSS — still fully
   driven from this GUI, with append-only clients and central retention.

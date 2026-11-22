@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -45,6 +46,11 @@ type Agent struct {
 	cfg *localConfig // agent.yaml state (see config.go)
 
 	kopiaMu sync.Mutex // guards <state>/kopia (connection settings, binary)
+
+	// Self-update (update.go).
+	exeSHA   string
+	updating atomic.Bool
+	restart  chan struct{}
 }
 
 // beginRun registers a cancellable context for the run about to start. Only
@@ -90,7 +96,33 @@ func New(stateDir, configPath string) (*Agent, error) {
 
 // Run connects to the server and keeps reconnecting with backoff until ctx
 // is cancelled.
-func (a *Agent) Run(ctx context.Context) error {
+func (a *Agent) Run(parent context.Context) error {
+	if a.restart == nil {
+		a.restart = make(chan struct{}, 1)
+	}
+	cleanupOldExe()
+	a.exeSHA = exeImageSHA256()
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	restarting := make(chan struct{})
+	go func() {
+		select {
+		case <-a.restart:
+			close(restarting)
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	err := a.run(ctx)
+	select {
+	case <-restarting:
+		return ErrRestartForUpdate
+	default:
+		return err
+	}
+}
+
+func (a *Agent) run(ctx context.Context) error {
 	go a.cfg.watch(ctx)
 	go a.ensureMeshAgent(ctx)
 
@@ -147,7 +179,7 @@ func (a *Agent) connectAndServe(ctx context.Context) error {
 	hostname := hostnameOrEmpty()
 	if err := a.send(proto.MsgHello, proto.Hello{
 		Hostname: hostname, OS: runtime.GOOS, Arch: runtime.GOARCH, Version: Version,
-		Caps: helloCaps(),
+		Caps: helloCaps(), ExeSHA256: a.exeSHA, Flavor: buildFlavor(),
 	}); err != nil {
 		return err
 	}
@@ -201,6 +233,13 @@ func (a *Agent) handleMessage(env proto.Envelope) {
 		}
 		go a.runBackup(cmd)
 
+	case proto.MsgAgentUpdate:
+		u, err := unmarshalMsg[proto.AgentUpdate](env.Data)
+		if err != nil {
+			log.Printf("bad agent_update: %v", err)
+			return
+		}
+		go a.handleAgentUpdate(u)
 	case proto.MsgKopiaConfig:
 		cfg, err := unmarshalMsg[proto.KopiaConfig](env.Data)
 		if err != nil {
