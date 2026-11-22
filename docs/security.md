@@ -5,8 +5,15 @@
 - Agents only ever make **outbound** connections to the server
   (`wss://` control channel + `https://` data plane). No listening ports,
   no VPN, no firewall changes on clients.
-- The server exposes exactly one TCP port (default 8443) for everything:
+- By default the server exposes one TCP port (default 8443) for everything:
   GUI, API and agents.
+- With `CB_ADMIN_LISTEN` set, the GUI and admin API move to a second
+  listener that is meant to stay private (localhost or an internal network,
+  fronted by a Cloudflare Tunnel with Access). The public port then serves
+  only the agent API, agent binaries and the two install scripts: no login
+  page, no admin API, so no password-guessing surface on the internet. Both
+  listeners share one certificate, so agents' pinned fingerprint is
+  unchanged.
 
 ## Server authenticity (why self-signed is safe here)
 

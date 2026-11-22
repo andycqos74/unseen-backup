@@ -16,6 +16,11 @@ DATA_DIR="${CB_DATA_DIR:-/var/lib/backup-server}"
 LISTEN="${CB_LISTEN:-:8443}"
 SERVER_NAME="${CB_SERVER_NAME:-}"
 PUBLIC_URL="${CB_PUBLIC_URL:-}"
+# Optional separate admin listener, e.g. CB_ADMIN_LISTEN=127.0.0.1:8444:
+# the GUI then stays on localhost (reach it via cloudflared or an SSH
+# tunnel) and $LISTEN serves agents only.
+ADMIN_LISTEN="${CB_ADMIN_LISTEN:-}"
+ADMIN_URL="${CB_ADMIN_URL:-}"
 
 echo "Building server binary..."
 CGO_ENABLED=0 go build -ldflags "-s -w -X centralbackup/internal/agent.Version=$(git describe --tags --always 2>/dev/null || echo dev)" \
@@ -44,6 +49,8 @@ Environment=CB_LISTEN=$LISTEN
 Environment=CB_AGENT_BIN_DIR=$DATA_DIR/agents
 Environment=CB_SERVER_NAME=$SERVER_NAME
 Environment=CB_PUBLIC_URL=$PUBLIC_URL
+Environment=CB_ADMIN_LISTEN=$ADMIN_LISTEN
+Environment=CB_ADMIN_URL=$ADMIN_URL
 Restart=always
 RestartSec=5
 
@@ -55,7 +62,11 @@ systemctl daemon-reload
 systemctl enable --now backup-server
 
 echo
-echo "Server installed and running on $LISTEN."
+if [ -n "$ADMIN_LISTEN" ]; then
+    echo "Server installed: agents on $LISTEN, GUI/admin on $ADMIN_LISTEN."
+else
+    echo "Server installed and running on $LISTEN."
+fi
 echo "  status:      systemctl status backup-server"
 echo "  logs:        journalctl -u backup-server -f"
 echo "  fingerprint: journalctl -u backup-server | grep -i fingerprint | tail -1"

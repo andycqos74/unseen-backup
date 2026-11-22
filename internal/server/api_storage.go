@@ -355,9 +355,10 @@ func (s *Server) fetchAccountLabel(ctx context.Context, cfg storage.Config, acce
 }
 
 // oauthRedirectURLFromRequest is the callback URL to register with the
-// provider: CB_PUBLIC_URL when configured, otherwise the request's own host.
+// provider: the admin address (CB_ADMIN_URL, or CB_PUBLIC_URL when there is
+// no separate admin listener), otherwise the request's own host.
 func (s *Server) oauthRedirectURLFromRequest(r *http.Request, _ storage.Provider) string {
-	return s.publicBaseURL(r) + oauthCallbackPath
+	return s.adminBaseURL(r) + oauthCallbackPath
 }
 
 // clientIDMismatch catches the common mistake of pasting one provider's

@@ -65,7 +65,7 @@ func (s *Server) handleInstaller(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 
 	if err := bundle.Append(w, f, bundle.Enrollment{
-		ServerURL:   s.publicBaseURL(r),
+		ServerURL:   s.agentBaseURL(r),
 		Token:       token,
 		Fingerprint: s.fingerprint,
 		Name:        strings.TrimSpace(r.URL.Query().Get("name")),

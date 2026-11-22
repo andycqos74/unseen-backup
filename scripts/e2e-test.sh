@@ -7,8 +7,18 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# E2E_SPLIT=1 runs the server with separate agent and admin listeners
+# (CB_ADMIN_LISTEN): agents use AGENT_BASE, the GUI/admin API uses BASE.
 PORT=18443
-BASE="https://127.0.0.1:$PORT"
+ADMIN_PORT=18444
+AGENT_BASE="https://127.0.0.1:$PORT"
+if [ "${E2E_SPLIT:-0}" = 1 ]; then
+    BASE="https://127.0.0.1:$ADMIN_PORT"
+    SPLIT_ENV=(CB_ADMIN_LISTEN="127.0.0.1:$ADMIN_PORT" CB_PUBLIC_URL="$AGENT_BASE")
+else
+    BASE="$AGENT_BASE"
+    SPLIT_ENV=()
+fi
 WORK="$(mktemp -d)"
 JAR="$WORK/cookies.txt"
 HDR=(-H 'X-Requested-With: fetch' -H 'Content-Type: application/json')
@@ -48,7 +58,7 @@ go build -o "$WORK/backup-agent" ./cmd/agent
 
 say "Starting server"
 mkdir -p "$WORK/data"
-CB_DATA_DIR="$WORK/data" CB_LISTEN="127.0.0.1:$PORT" \
+env "${SPLIT_ENV[@]}" CB_DATA_DIR="$WORK/data" CB_LISTEN="127.0.0.1:$PORT" \
     "$WORK/backup-server" >"$WORK/server.log" 2>&1 &
 SERVER_PID=$!
 wait_for 15 "server to listen" curl -ksSf "$BASE/login" -o /dev/null
@@ -64,19 +74,27 @@ TOKEN_JSON=$(capi POST /api/admin/tokens '{"note":"e2e"}')
 TOKEN=$(echo "$TOKEN_JSON" | jq -r .token)
 FP=$(echo "$TOKEN_JSON" | jq -r .fingerprint)
 [ -n "$TOKEN" ] && [ -n "$FP" ] || fail "token creation"
+[ "$(echo "$TOKEN_JSON" | jq -r .base_url)" = "$AGENT_BASE" ] || fail "token base_url is not the agent address"
+if [ "${E2E_SPLIT:-0}" = 1 ]; then
+    code=$(curl -ksS -o /dev/null -w '%{http_code}' "$AGENT_BASE/login")
+    [ "$code" = 404 ] || fail "agent listener serves the login page ($code)"
+    code=$(curl -ksS -o /dev/null -w '%{http_code}' -X POST "$BASE/api/agent/enroll")
+    [ "$code" = 404 ] || fail "admin listener serves the agent API ($code)"
+    pass "split listeners: no GUI on the agent port, no agent API on the admin port"
+fi
 
 mkdir -p "$WORK/agent-state"
-"$WORK/backup-agent" enroll --server "$BASE" --token "$TOKEN" --fingerprint "$FP" \
+"$WORK/backup-agent" enroll --server "$AGENT_BASE" --token "$TOKEN" --fingerprint "$FP" \
     --name e2e-client --state-dir "$WORK/agent-state" || fail "enroll"
 # Token must be single-use.
-if "$WORK/backup-agent" enroll --server "$BASE" --token "$TOKEN" \
+if "$WORK/backup-agent" enroll --server "$AGENT_BASE" --token "$TOKEN" \
     --state-dir "$WORK/agent-state2" 2>/dev/null; then
     fail "enrollment token was reusable"
 fi
 pass "enrolled with pinned fingerprint; token is single-use"
 
 # Wrong fingerprint must be rejected.
-if "$WORK/backup-agent" enroll --server "$BASE" --token whatever \
+if "$WORK/backup-agent" enroll --server "$AGENT_BASE" --token whatever \
     --fingerprint "$(printf '0%.0s' {1..64})" --state-dir "$WORK/agent-state3" 2>/dev/null; then
     fail "wrong fingerprint accepted"
 fi

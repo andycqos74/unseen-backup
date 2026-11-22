@@ -34,7 +34,9 @@ ENV CB_DATA_DIR=/data \
     CB_LISTEN=:8443 \
     CB_AGENT_BIN_DIR=/app/agents
 VOLUME /data
-EXPOSE 8443
+# 8443: agents (and the GUI unless CB_ADMIN_LISTEN is set); 8444: the
+# optional separate admin listener.
+EXPOSE 8443 8444
 ENTRYPOINT ["/app/backup-server"]
 
 # ---- containerized agent image (for Docker hosts) ----

@@ -1,7 +1,12 @@
-// Package server implements the central backup server: HTTPS endpoint
+// Package server implements the central backup server: HTTPS endpoints
 // serving the admin web GUI, the admin REST API, the agent WebSocket
 // control channel and the agent data-plane endpoints (blob/manifest
 // upload/download).
+//
+// By default one listener (CB_LISTEN) serves everything. With
+// CB_ADMIN_LISTEN set, the GUI and admin API move to that listener and
+// CB_LISTEN serves agents only, so the agent port can be published while the
+// admin side stays private (e.g. reachable only through a Cloudflare Tunnel).
 package server
 
 import (
@@ -20,11 +25,15 @@ import (
 )
 
 type Config struct {
-	Listen     string // e.g. ":8443"
+	Listen     string // e.g. ":8443" — agents (and, unless AdminListen is set, everything)
+	// AdminListen, when set, moves the GUI and admin API to their own
+	// listener (e.g. "127.0.0.1:8444" or ":8444" on an internal network).
+	AdminListen string
 	DataDir    string // sqlite db, tls certs
 	StorageDir string // blob/manifest storage root (localfs backend)
 	ServerName string // comma-separated extra SANs for the generated cert
-	PublicURL  string // externally reachable origin, e.g. https://backup.example.com:8443
+	PublicURL  string // origin agents connect to, e.g. https://backup.example.com:8443
+	AdminURL   string // origin browsers use for the GUI (split mode), e.g. https://backup-admin.example.com
 	CertFile   string // optional externally provided cert
 	KeyFile    string
 	AgentBins  string // directory of prebuilt agent binaries served at /dl/
@@ -39,7 +48,9 @@ func ConfigFromEnv() Config {
 	}
 	dataDir := get("CB_DATA_DIR", "./data")
 	return Config{
-		Listen:     get("CB_LISTEN", ":8443"),
+		Listen:      get("CB_LISTEN", ":8443"),
+		AdminListen: get("CB_ADMIN_LISTEN", ""),
+		AdminURL:    get("CB_ADMIN_URL", ""),
 		DataDir:    dataDir,
 		StorageDir: get("CB_STORAGE_DIR", filepath.Join(dataDir, "storage")),
 		ServerName: get("CB_SERVER_NAME", ""),
@@ -100,6 +111,14 @@ func New(cfg Config) (*Server, error) {
 		return nil, err
 	}
 	cfg.PublicURL = publicURL
+	adminURL, err := normalizeOrigin("CB_ADMIN_URL", cfg.AdminURL)
+	if err != nil {
+		return nil, err
+	}
+	cfg.AdminURL = adminURL
+	if err := validateListeners(cfg); err != nil {
+		return nil, err
+	}
 
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		return nil, err
@@ -140,9 +159,30 @@ func New(cfg Config) (*Server, error) {
 	return s, nil
 }
 
-func (s *Server) Run() error {
+// agentHandler serves what agents and the install scripts need, and nothing
+// else: no GUI, no admin API, no login page.
+func (s *Server) agentHandler() *http.ServeMux {
 	mux := http.NewServeMux()
+	s.registerAgentRoutes(mux)
+	return mux
+}
 
+// adminHandler serves the GUI and admin API (split mode).
+func (s *Server) adminHandler() *http.ServeMux {
+	mux := http.NewServeMux()
+	s.registerAdminRoutes(mux)
+	return mux
+}
+
+// combinedHandler serves everything on one listener (the default).
+func (s *Server) combinedHandler() *http.ServeMux {
+	mux := http.NewServeMux()
+	s.registerAgentRoutes(mux)
+	s.registerAdminRoutes(mux)
+	return mux
+}
+
+func (s *Server) registerAgentRoutes(mux *http.ServeMux) {
 	// Agent endpoints (authenticated by agent id + secret).
 	mux.HandleFunc("POST /api/agent/enroll", s.handleEnroll)
 	mux.HandleFunc("GET /api/agent/ws", s.handleAgentWS)
@@ -154,19 +194,26 @@ func (s *Server) Run() error {
 	mux.HandleFunc("GET /api/agent/transfers/{id}/content", s.agentAuth(s.handleTransferContent))
 	mux.HandleFunc("PUT /api/agent/transfers/{id}/content", s.agentAuth(s.handleTransferUpload))
 
+	// Prebuilt agent binaries for the install scripts (not secret).
+	mux.Handle("GET /dl/", http.StripPrefix("/dl/", http.FileServer(http.Dir(s.cfg.AgentBins))))
+
+	// The paste-in install commands fetch these from the agent address.
+	s.web.registerInstallScripts(mux)
+}
+
+func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 	// Admin API (session cookie).
 	s.registerAdminAPI(mux)
 	s.registerStorageAPI(mux)
 
 	// Web GUI.
 	s.web.register(mux)
+}
 
-	// Prebuilt agent binaries for the install scripts (not secret).
-	mux.Handle("GET /dl/", http.StripPrefix("/dl/", http.FileServer(http.Dir(s.cfg.AgentBins))))
-
-	srv := &http.Server{
-		Addr:              s.cfg.Listen,
-		Handler:           mux,
+func (s *Server) newHTTPServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
 		ReadHeaderTimeout: 30 * time.Second,
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{s.tlsCert},
@@ -181,11 +228,36 @@ func (s *Server) Run() error {
 			MaxVersion: tls.VersionTLS12,
 		},
 	}
+}
 
+func (s *Server) Run() error {
 	go s.runScheduler()
 	go s.runMaintenance()
 
-	log.Printf("central backup server listening on https://%s", s.cfg.Listen)
 	log.Printf("TLS certificate SHA-256 fingerprint: %s", s.fingerprint)
-	return srv.ListenAndServeTLS("", "")
+
+	if !s.cfg.splitMode() {
+		log.Printf("central backup server listening on https://%s (GUI, admin API and agents)", s.cfg.Listen)
+		return s.newHTTPServer(s.cfg.Listen, s.combinedHandler()).ListenAndServeTLS("", "")
+	}
+
+	// Split mode: both listeners share the certificate, so agents' pinned
+	// fingerprint is unchanged and cloudflared can reach the admin side
+	// over HTTPS (with origin TLS verification off, or this cert pinned).
+	if s.cfg.AdminURL == "" {
+		log.Printf("note: CB_ADMIN_URL is not set; the storage OAuth callback will use the " +
+			"browser's host, and background token refresh falls back to CB_SERVER_NAME")
+	}
+	errc := make(chan error, 2)
+	go func() {
+		log.Printf("agent listener on https://%s (agents only; agent URL %s)", s.cfg.Listen, s.agentBaseURL(nil))
+		errc <- fmt.Errorf("agent listener: %w", s.newHTTPServer(s.cfg.Listen, s.agentHandler()).ListenAndServeTLS("", ""))
+	}()
+	go func() {
+		log.Printf("admin listener on https://%s (GUI and admin API)", s.cfg.AdminListen)
+		errc <- fmt.Errorf("admin listener: %w", s.newHTTPServer(s.cfg.AdminListen, s.adminHandler()).ListenAndServeTLS("", ""))
+	}()
+	// Either listener failing is fatal: a half-running server (agents up,
+	// no GUI, or the reverse) is worse than a clean restart.
+	return <-errc
 }

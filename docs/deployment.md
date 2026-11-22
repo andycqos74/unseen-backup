@@ -166,8 +166,9 @@ journalctl -u backup-server -f
 
 ## 3. Reverse proxies, tunnels and Cloudflare
 
-**Short version: don't put a TLS-terminating proxy in front of this
-server.** Agents verify the server by pinning the SHA-256 fingerprint of
+**Short version: don't put a TLS-terminating proxy in front of the
+address agents use.** The admin GUI can be tunnelled if it has its own
+listener; see [Admin GUI behind a Cloudflare Tunnel](#admin-gui-behind-a-cloudflare-tunnel-separate-admin-listener). Agents verify the server by pinning the SHA-256 fingerprint of
 the certificate they are handed. Any middlebox that terminates TLS presents
 *its own* certificate, so the pin fails and agents refuse to connect. This
 is the intended behaviour — it is what makes a self-signed certificate safe
@@ -251,6 +252,59 @@ CB_PUBLIC_URL=https://backup.example.com:8443 \
 
 It must be `https://`, a bare origin with no path, and include the port
 unless you serve on 443. The server refuses to start on a malformed value.
+
+### Admin GUI behind a Cloudflare Tunnel (separate admin listener)
+
+The pinning rule above is about the address **agents** use. The admin GUI
+can sit behind a tunnel, as long as it is served on a different listener
+from the agents. Set `CB_ADMIN_LISTEN`:
+
+| Setting | Meaning |
+|---|---|
+| `CB_LISTEN` (default `:8443`) | Agents only: `/api/agent/*`, `/dl/*` and the two install scripts. No login page, no GUI, no admin API. **Publish this one.** |
+| `CB_ADMIN_LISTEN` (e.g. `:8444`) | GUI and admin API only. **Never publish it**; bind it to `127.0.0.1` or an internal Docker network and put `cloudflared` in front. |
+| `CB_PUBLIC_URL` | Agent address baked into enrollment commands and installers, e.g. `https://agents.example.com:8443`. Required in split mode (or `CB_SERVER_NAME`, from which it is derived with the agent port). |
+| `CB_ADMIN_URL` | The GUI's browser address, e.g. `https://backup-admin.example.com`. Used for the storage OAuth redirect URI. Optional: without it the browser's host is used. Set it if you use OneDrive/Google Drive storage, because background token refresh has no browser request to learn it from. |
+
+Leaving `CB_ADMIN_LISTEN` unset keeps the original behaviour: one port
+serves everything.
+
+Both listeners use the same certificate, so **enrolled agents are
+unaffected**: they keep connecting to 8443 with the same fingerprint, and
+nothing needs re-enrolling.
+
+Setup:
+
+1. DNS: the agent hostname (e.g. `agents.example.com`) is a **grey-cloud** `A`
+   record pointing at the server's IP. The admin hostname (e.g.
+   `backup-admin.example.com`) is a public hostname on your Cloudflare Tunnel.
+2. Start the server with `CB_ADMIN_LISTEN=:8444`, `CB_PUBLIC_URL=https://agents.example.com:8443`
+   and `CB_ADMIN_URL=https://backup-admin.example.com`. The compose files
+   publish 8444 on `127.0.0.1` only.
+3. Tunnel ingress: service `https://backup-server:8444` (cloudflared on a
+   shared Docker network) or `https://127.0.0.1:8444` (cloudflared on the
+   host), with **No TLS Verify** turned on (`originRequest: noTLSVerify: true`).
+   The origin certificate is the server's self-signed one.
+4. Put a **Cloudflare Access** policy on the admin hostname.
+5. If you use OneDrive/Google Drive storage, the redirect URI registered with
+   the provider becomes `https://backup-admin.example.com/api/admin/storage/oauth/callback`.
+   Update it in the provider's console, then reconnect in Settings.
+
+Verify, from outside the server:
+
+```bash
+curl -sk -o /dev/null -w '%{http_code}\n' https://agents.example.com:8443/login   # 404: no GUI on the agent port
+curl -sk -o /dev/null -w '%{http_code}\n' https://agents.example.com:8443/static/install-agent.sh  # 200
+nc -vz -w 3 agents.example.com 8444    # must fail: admin port not reachable
+```
+
+Then open `https://backup-admin.example.com`, sign in through Access, and
+check *Clients → Enroll new client*: the command must show the **agent**
+address.
+
+Before you close the old route, keep a working path to the GUI (an SSH
+tunnel: `ssh -L 8444:127.0.0.1:8444 you@server`, then `https://localhost:8444`)
+until the tunnel is confirmed.
 
 ### If you genuinely can't expose a port
 

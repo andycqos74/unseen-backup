@@ -1,6 +1,10 @@
 # Evaluation: Central Backup vs Kopia, and a Kopia + MeshCentral management platform
 
-Status: design evaluation, November 2026. No code changes. Kopia facts are
+Status: **decision made — Kopia will be the backup engine.** Phase 1
+(separate agent and admin listeners) is implemented: see
+[deployment.md §3](deployment.md#admin-gui-behind-a-cloudflare-tunnel-separate-admin-listener).
+
+Evaluation written November 2026. Kopia facts are
 for v0.23.x (latest release found: v0.23.1, June 2026). MeshCentral facts
 are for the 1.2.x line. Anything marked **verify** came from memory or
 secondary sources and should be checked against current upstream docs
@@ -55,9 +59,11 @@ before you build on it.
   `kopia policy set <target> --enable-volume-shadow-copy=when-available`
   (values: never, always, when-available, inherit). Before/after actions are
   also available.
-- **Checkpoints.** Long snapshots write periodic checkpoints
-  (`--checkpoint-interval`, at most 45 minutes), so an interrupted
-  multi-hour first backup does not start from zero.
+- **Checkpoints.** Long snapshots write periodic checkpoints (default every
+  45 minutes, `--checkpoint-interval`, maximum 45 minutes), saved as
+  "incomplete" snapshots so an interrupted multi-hour first backup does not
+  start from zero and maintenance does not collect its data. They are removed
+  automatically once a complete snapshot finishes.
 - **Repository server.** `kopia server start` fronts one repository for
   many clients over gRPC/HTTPS. Each client authenticates as `user@host`
   (`kopia server user add`), and storage credentials never leave the server.
@@ -129,11 +135,8 @@ These are the parts worth keeping.
   - Packing removes per-object overhead for small files.
 - For a dataset of many small, unchanging documents, the two are close.
 
-Not measured. The download of the Kopia binary for a side-by-side test was
-blocked in this environment. A quick test worth running yourself: one
-directory with text, duplicates, an incompressible file and one large file;
-snapshot it with both tools, change 1 MB in the middle of the large file,
-snapshot again, and compare stored bytes after each run.
+Not benchmarked; the decision to adopt Kopia was taken on the design
+differences above.
 
 ## 4. Feasibility: central management with Kopia as the backup engine
 
@@ -212,8 +215,16 @@ the backup transport.**
   account) and have the controller mint short-lived login tokens. Each client
   page then shows *Desktop*, *Terminal* and *Files* buttons, opening
   MeshCentral at that node in an iframe or a new tab (`viewmode` URL
-  parameters select the tab for that node). **Verify** current token
-  lifetime and embedding settings. A user report says tokens last one hour.
+  parameters select the tab for that node).
+- **Token lifetime.** URL login tokens encrypted with the server's
+  `loginTokenKey` (`?login=…`) expire after **2 minutes** by default (plus 30 s
+  clock-skew allowance). The generator can encode its own `expire` (minutes;
+  0 = never). Once used, the browser holds a normal MeshCentral session
+  cookie, so a short token is right: the controller mints one per click,
+  as Tactical RMM does. Account-level tokens (*My Account → Login tokens*,
+  `~t:…`) have a user-chosen lifetime and are for `meshctrl`/automation, not
+  for browser hand-off. See
+  [MeshCentral#1767](https://github.com/Ylianst/MeshCentral/issues/1767).
 - **Mapping.** The controller stores each client's MeshCentral node ID. Get
   it by having the backup agent report the local MeshAgent's node ID, or by
   matching hostname through `meshctrl` / the MeshCentral websocket control
@@ -290,9 +301,10 @@ networks:  tunnel (cloudflared ↔ web UIs), internal (controller ↔ kopia ↔ 
            egress (kopia → S3, controller → OAuth), agents (published ports only)
 
 services:
-  cloudflared        tunnel → controller:8443(ui), meshcentral:443         [tunnel]
+  cloudflared        tunnel → controller:8444 (admin listener), meshcentral:443 [tunnel]
   controller         this repo's server: GUI, hub, scheduler, installer
-                     builder; publishes the agent WSS port                  [tunnel, internal, agents, egress]
+                     builder; publishes 8443 (agents only, CB_LISTEN);
+                     GUI on 8444 (CB_ADMIN_LISTEN), not published           [tunnel, internal, agents, egress]
   kopia-server       kopia server start --tls-*; repository on /repo or S3;
                      publishes the gRPC port                                [internal, agents, egress]
   meshcentral        own TLS; agent port published, UI via tunnel origin    [tunnel, internal, agents]
@@ -358,9 +370,8 @@ Things to watch:
 
 | Phase | Work | Result |
 |---|---|---|
-| 0 | Run the compression/dedup test from §3 on real data, including one large DB or PST. Confirm Kopia's VSS flag and repository-server ACL behaviour on a Windows 10 test box. | Evidence to justify the switch. |
-| 1 | Split the controller into agent and admin listeners with two URLs (§7). Add MeshCentral to the stack and put the UIs behind the tunnel and Access. Install MeshAgent from the bootstrapper. Add Desktop/Terminal buttons on the client page. | Remote access in one console. No engine risk. |
-| 2 | Add the Kopia server container. Add a second engine to the agent (option A) chosen per job. The controller provisions Kopia users and policies and lists Kopia snapshots alongside existing ones. | Both engines run in parallel. New jobs use Kopia. |
+| 1 | **Done:** split the controller into agent and admin listeners with two URLs (§7). Next: add MeshCentral to the stack and put the UIs behind the tunnel and Access. Install MeshAgent from the bootstrapper. Add Desktop/Terminal buttons on the client page. | Remote access in one console. No engine risk. |
+| 2 | Confirm Kopia's VSS policy and repository-server ACLs on a Windows 10 test box. Add the Kopia server container. Add a second engine to the agent (option A) chosen per job. The controller provisions Kopia users and policies and lists Kopia snapshots alongside existing ones. | Both engines run in parallel. New jobs use Kopia. |
 | 3 | Port restore (to client, and browser download) to Kopia. Make Kopia the default engine. Set up `sync-to` for an off-site mirror. Keep the legacy engine only for the Windows 7 build. | Old snapshots age out, and engine code shrinks. |
 | 4 (optional) | Headscale for zero public ports. Code-signed installer. Agent self-update. | Hardening. |
 
@@ -384,4 +395,5 @@ unchanged.
 - [MeshCentral docs](https://docs.meshcentral.com/meshcentral/)
 - [MeshCentral releases](https://www.github.com/Ylianst/MeshCentral/releases)
 - [MeshCentral login-token issue](https://github.com/Ylianst/MeshCentral/issues/718)
+- [MeshCentral login-token expiry](https://github.com/Ylianst/MeshCentral/issues/1767)
 - [Syncthing forum: Go and Windows 7](https://forum.syncthing.net/t/end-of-windows-7-64bits-support/26137)
