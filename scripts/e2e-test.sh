@@ -19,6 +19,12 @@ else
     BASE="$AGENT_BASE"
     SPLIT_ENV=()
 fi
+# KOPIA_BIN=/path/to/kopia also exercises the Kopia engine (skipped otherwise).
+KOPIA_ENV=()
+if [ -n "${KOPIA_BIN:-}" ]; then
+    KOPIA_ENV=(CB_KOPIA_PASSWORD=e2e-repo-password CB_KOPIA_BIN="$KOPIA_BIN"
+               CB_KOPIA_LISTEN=127.0.0.1:18515 CB_AGENT_BIN_DIR="__WORK__/agents")
+fi
 WORK="$(mktemp -d)"
 JAR="$WORK/cookies.txt"
 HDR=(-H 'X-Requested-With: fetch' -H 'Content-Type: application/json')
@@ -57,8 +63,12 @@ go build -o "$WORK/backup-server" ./cmd/server
 go build -o "$WORK/backup-agent" ./cmd/agent
 
 say "Starting server"
-mkdir -p "$WORK/data"
-env "${SPLIT_ENV[@]}" CB_DATA_DIR="$WORK/data" CB_LISTEN="127.0.0.1:$PORT" \
+mkdir -p "$WORK/data" "$WORK/agents"
+if [ -n "${KOPIA_BIN:-}" ]; then
+    cp "$KOPIA_BIN" "$WORK/agents/kopia-$(go env GOOS)-$(go env GOARCH)"
+    KOPIA_ENV=("${KOPIA_ENV[@]/__WORK__/$WORK}")
+fi
+env "${SPLIT_ENV[@]}" "${KOPIA_ENV[@]}" CB_DATA_DIR="$WORK/data" CB_LISTEN="127.0.0.1:$PORT" \
     "$WORK/backup-server" >"$WORK/server.log" 2>&1 &
 SERVER_PID=$!
 wait_for 15 "server to listen" curl -ksSf "$BASE/login" -o /dev/null
@@ -332,6 +342,66 @@ say "Client-side deletion (backup-agent job rm)"
 local_job_gone() { ! local_job_on_server; }
 wait_for 15 "client deletion to sync" local_job_gone
 pass "client-side job deletion synced to server"
+
+if [ -n "${KOPIA_BIN:-}" ]; then
+    say "Kopia engine"
+    kopia_conn() { [ -f "$WORK/agent-state/kopia/conn.json" ]; }
+    wait_for 30 "Kopia connection settings on the agent" kopia_conn
+    pass "agent provisioned as a Kopia user"
+
+    KJOB=$(capi POST /api/admin/jobs "{\"agent_id\":\"$AGENT_ID\",\"name\":\"e2e-kopia\",\"engine\":\"kopia\",\"paths\":[\"$FIX\"],\"excludes\":[\"*.tmp\",\"skipme\"],\"enabled\":true,\"keep_last\":5}")
+    KJOB_ID=$(echo "$KJOB" | jq -r .id)
+    [ "$(echo "$KJOB" | jq -r .engine)" = kopia ] || fail "kopia job create: $KJOB"
+    KRUN=$(capi POST "/api/admin/jobs/$KJOB_ID/run" '{"mode":"full"}' | jq -r .run_id)
+    wait_for 120 "kopia run to finish" run_finished "$KRUN"
+    [ "$(run_status "$KRUN")" = success ] || { tail -20 "$WORK/agent.log"; tail -20 "$WORK/server.log"; fail "kopia run: $(capi GET /api/admin/runs/$KRUN)"; }
+    KSNAP=$(capi GET "/api/admin/runs/$KRUN" | jq -r .run.SnapshotID)
+    KFILES=$(capi GET "/api/admin/runs/$KRUN" | jq -r .run.Stats | jq -r .files_total)
+    [ "$KFILES" = 4 ] || fail "kopia: expected 4 files (excludes as policy), got $KFILES"
+    capi GET "/api/admin/snapshots?agent=$AGENT_ID" | jq -e --arg id "$KSNAP" 'map(select(.ID == $id and .Backend == "kopia")) | length == 1' >/dev/null \
+        || fail "kopia snapshot not listed"
+    pass "kopia backup: snapshot $KSNAP, $KFILES files, excludes applied as Kopia policy"
+
+    KTREE=$(capi GET "/api/admin/snapshots/$KSNAP/tree?path=${FIX#/}")
+    echo "$KTREE" | jq -e 'map(.name) | index("a.txt") and index("sub") and (index("junk.tmp") | not)' >/dev/null || fail "kopia tree: $KTREE"
+    curl -ksS -b "$JAR" -o "$WORK/k-a.txt" "$BASE/api/admin/snapshots/$KSNAP/download?path=${FIX#/}/a.txt"
+    cmp "$WORK/k-a.txt" "$FIX/a.txt" || fail "kopia single-file download differs"
+    curl -ksS -b "$JAR" -o "$WORK/k.zip" "$BASE/api/admin/snapshots/$KSNAP/download?zip=1"
+    python3 -c "
+import zipfile
+z = zipfile.ZipFile('$WORK/k.zip')
+big = [n for n in z.namelist() if n.endswith('sub/big.bin')]
+assert big and z.read(big[0]) == open('$FIX/sub/big.bin','rb').read(), z.namelist()
+" || fail "kopia zip download"
+    pass "kopia snapshot browse, file download and zip download OK"
+
+    KREST="$WORK/k-restored"
+    KRR=$(capi POST "/api/admin/snapshots/$KSNAP/restore" "{\"paths\":[],\"target_dir\":\"$KREST\",\"overwrite\":true}" | jq -r .run_id)
+    wait_for 60 "kopia restore to finish" run_finished "$KRR"
+    [ "$(run_status "$KRR")" = success ] || fail "kopia restore: $(capi GET /api/admin/runs/$KRR)"
+    cmp "$FIX/sub/big.bin" "$KREST$FIX/sub/big.bin" || fail "kopia restore: big.bin differs"
+    cmp "$FIX/a.txt" "$KREST$FIX/a.txt" || fail "kopia restore: a.txt differs"
+    [ ! -e "$KREST$FIX/junk.tmp" ] || fail "kopia restore: excluded file came back"
+    KRR2=$(capi POST "/api/admin/snapshots/$KSNAP/restore" "{\"paths\":[\"${FIX#/}/sub\"],\"target_dir\":\"$KREST-sel\",\"overwrite\":true}" | jq -r .run_id)
+    wait_for 60 "kopia selective restore" run_finished "$KRR2"
+    [ "$(run_status "$KRR2")" = success ] && [ -f "$KREST-sel$FIX/sub/big.bin" ] && [ ! -e "$KREST-sel$FIX/a.txt" ] \
+        || fail "kopia selective restore: $(capi GET /api/admin/runs/$KRR2)"
+    pass "kopia restore (full and selected folder) matches source"
+
+    # The client is append-only: it must not be able to delete its backups.
+    KC="$WORK/agent-state/kopia"
+    KPW=$(jq -r .password "$KC/conn.json")
+    KID=$(KOPIA_PASSWORD="$KPW" KOPIA_CHECK_FOR_UPDATES=false "$KC/kopia" --config-file="$KC/repository.config" snapshot list --json 2>/dev/null | jq -r '.[0].id')
+    if KOPIA_PASSWORD="$KPW" KOPIA_CHECK_FOR_UPDATES=false "$KC/kopia" --config-file="$KC/repository.config" snapshot delete "$KID" --delete >"$WORK/kdel.out" 2>&1; then
+        fail "client could delete its own Kopia snapshot"
+    fi
+    grep -qi "access denied" "$WORK/kdel.out" || { cat "$WORK/kdel.out"; fail "unexpected delete failure"; }
+    pass "client is append-only (snapshot delete denied)"
+
+    capi DELETE "/api/admin/snapshots/$KSNAP" >/dev/null
+    capi GET "/api/admin/snapshots?agent=$AGENT_ID" | jq -e --arg id "$KSNAP" 'map(select(.ID == $id)) | length == 0' >/dev/null || fail "kopia snapshot not deleted"
+    pass "kopia snapshot deleted from the GUI"
+fi
 
 say "Snapshot deletion + GC"
 capi DELETE "/api/admin/snapshots/$SNAP1" | jq -e .ok >/dev/null || fail "snapshot delete"

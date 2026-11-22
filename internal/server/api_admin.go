@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -488,6 +489,17 @@ func (s *Server) handleSnapshotsList(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
 	}
+	// Kopia snapshots live in the Kopia repository whatever the active
+	// storage backend is.
+	ks, err := s.store.ListSnapshots(kopiaBackend, q.Get("agent"), q.Get("job"))
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	if len(ks) > 0 {
+		snaps = append(snaps, ks...)
+		sort.Slice(snaps, func(i, j int) bool { return snaps[i].CreatedAt > snaps[j].CreatedAt })
+	}
 	writeJSON(w, http.StatusOK, snaps)
 }
 
@@ -619,5 +631,6 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		"fingerprint": s.fingerprint,
 		"stats":       stats,
 		"username":    s.sessionUser(r).Username,
+		"kopia":       s.kopia != nil,
 	})
 }

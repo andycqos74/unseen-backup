@@ -37,11 +37,17 @@ services:
     ports:
       - "8443:8443"
       - "127.0.0.1:8444:8444"
+      # Kopia repository server (only listens when CB_KOPIA_PASSWORD is set).
+      # Agents pin the same certificate as on 8443.
+      - "51515:51515"
     environment:
       CB_SERVER_NAME: ${CB_SERVER_NAME}
       CB_PUBLIC_URL: ${CB_PUBLIC_URL}
       CB_ADMIN_LISTEN: ${CB_ADMIN_LISTEN:-}
       CB_ADMIN_URL: ${CB_ADMIN_URL:-}
+      # --- Kopia backup engine (see docs/kopia.md). Unset = off.
+      CB_KOPIA_PASSWORD: ${CB_KOPIA_PASSWORD:-}   # repository password: openssl rand -hex 32 (Vaultwarden!)
+      CB_KOPIA_URL: ${CB_KOPIA_URL:-}             # e.g. https://agents.example.com:51515 (default: agent host + 51515)
       # --- Optional: MeshCentral remote access (see docs/remote-access.md).
       # Unset = feature off.
       CB_MESH_URL: ${CB_MESH_URL:-}               # e.g. https://mesh.example.com (UI via tunnel)

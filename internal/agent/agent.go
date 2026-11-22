@@ -43,6 +43,8 @@ type Agent struct {
 	cmds  map[string]context.CancelFunc
 
 	cfg *localConfig // agent.yaml state (see config.go)
+
+	kopiaMu sync.Mutex // guards <state>/kopia (connection settings, binary)
 }
 
 // beginRun registers a cancellable context for the run about to start. Only
@@ -145,6 +147,7 @@ func (a *Agent) connectAndServe(ctx context.Context) error {
 	hostname := hostnameOrEmpty()
 	if err := a.send(proto.MsgHello, proto.Hello{
 		Hostname: hostname, OS: runtime.GOOS, Arch: runtime.GOARCH, Version: Version,
+		Caps: helloCaps(),
 	}); err != nil {
 		return err
 	}
@@ -198,6 +201,15 @@ func (a *Agent) handleMessage(env proto.Envelope) {
 		}
 		go a.runBackup(cmd)
 
+	case proto.MsgKopiaConfig:
+		cfg, err := unmarshalMsg[proto.KopiaConfig](env.Data)
+		if err != nil {
+			log.Printf("bad kopia_config: %v", err)
+			return
+		}
+		if err := a.saveKopiaConfig(cfg); err != nil {
+			log.Printf("kopia: save connection settings: %v", err)
+		}
 	case proto.MsgRestore:
 		cmd, err := unmarshalMsg[proto.Restore](env.Data)
 		if err != nil {

@@ -47,6 +47,10 @@ type Config struct {
 	MeshGroup       string
 	MeshAutoInstall bool // backup agents install MeshAgent (CB_MESH_AUTOINSTALL, default on)
 	MeshErr         error
+
+	// Kopia configures the Kopia backup engine (off unless
+	// CB_KOPIA_PASSWORD is set).
+	Kopia kopiaConfig
 }
 
 func ConfigFromEnv() Config {
@@ -63,6 +67,7 @@ func ConfigFromEnv() Config {
 		MeshGroup:       meshGroup,
 		MeshAutoInstall: meshAuto,
 		MeshErr:         meshErr,
+		Kopia:           kopiaConfigFromEnv(),
 		Listen:          get("CB_LISTEN", ":8443"),
 		AdminListen:     get("CB_ADMIN_LISTEN", ""),
 		AdminURL:        get("CB_ADMIN_URL", ""),
@@ -111,6 +116,10 @@ type Server struct {
 	web *webUI
 
 	// mesh is the MeshCentral integration, nil when not configured.
+	// kopia is the Kopia engine (repository + repository server), nil when
+	// not configured.
+	kopia *kopiaEngine
+
 	mesh            *meshcentral.Client
 	meshGroupName   string
 	meshAutoInstall bool
@@ -179,6 +188,9 @@ func New(cfg Config) (*Server, error) {
 	if err := s.initStorage(); err != nil {
 		return nil, fmt.Errorf("open storage: %w", err)
 	}
+	if err := s.initKopia(certFile, keyFile); err != nil {
+		return nil, err
+	}
 	s.web, err = newWebUI(s)
 	if err != nil {
 		return nil, fmt.Errorf("web ui: %w", err)
@@ -221,6 +233,8 @@ func (s *Server) registerAgentRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/agent/transfers/{id}/content", s.agentAuth(s.handleTransferContent))
 	mux.HandleFunc("PUT /api/agent/transfers/{id}/content", s.agentAuth(s.handleTransferUpload))
 	mux.HandleFunc("GET /api/agent/meshagent", s.agentAuth(s.handleAgentMeshInstaller))
+	mux.HandleFunc("POST /api/agent/kopia/snapshots", s.agentAuth(s.handleKopiaCommit))
+	mux.HandleFunc("GET /api/agent/kopia/binary", s.agentAuth(s.handleKopiaBinary))
 
 	// Prebuilt agent binaries for the install scripts (not secret).
 	mux.Handle("GET /dl/", http.StripPrefix("/dl/", http.FileServer(http.Dir(s.cfg.AgentBins))))

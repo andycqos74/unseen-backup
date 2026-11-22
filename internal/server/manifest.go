@@ -23,6 +23,18 @@ import (
 
 // eachManifestEntry streams a snapshot manifest, invoking fn per entry.
 func (s *Server) eachManifestEntry(manifestKey string, fn func(e proto.ManifestEntry) error) error {
+	if strings.HasPrefix(manifestKey, kopiaKeyPrefix) {
+		entries, err := s.kopiaEntries(manifestKey)
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if err := fn(e); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	rc, err := s.backend().Get(manifestKey)
 	if err != nil {
 		return err
@@ -126,6 +138,9 @@ func underPrefix(path string, prefixes []string) bool {
 
 // streamFile writes one file's decompressed content from blob storage.
 func (s *Server) streamFile(w io.Writer, hash string) error {
+	if strings.HasPrefix(hash, kopiaKeyPrefix) {
+		return s.streamKopiaFile(w, hash[len(kopiaKeyPrefix):])
+	}
 	rc, err := s.backend().Get(storage.BlobKey(hash))
 	if err != nil {
 		return err

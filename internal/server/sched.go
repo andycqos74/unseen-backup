@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"log"
 	"time"
 
@@ -60,6 +61,13 @@ func (s *Server) runMaintenance() {
 		<-timer.C
 		if err := s.PruneAndGC(); err != nil {
 			log.Printf("maintenance: %v", err)
+		}
+		if s.kopia != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+			if err := s.expireKopia(ctx, nil); err != nil {
+				log.Printf("maintenance: kopia expire: %v", err)
+			}
+			cancel()
 		}
 		timer.Reset(24 * time.Hour)
 	}

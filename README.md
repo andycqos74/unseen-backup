@@ -50,6 +50,10 @@ compressed and deduplicated, stored on the server's local storage.
   (**PowerShell** or **cmd** on Windows, **sh** on Linux/macOS) and watch
   stdout/stderr stream back live. Runs in the background as the service
   account; cancel kills the whole process tree.
+- **Kopia engine** (optional, recommended): jobs can back up with Kopia —
+  chunk-level dedup, zstd, encrypted repository, Windows VSS — still fully
+  driven from this GUI, with append-only clients and central retention.
+  See [docs/kopia.md](docs/kopia.md).
 - **Remote access** (optional): a MeshCentral service in the same stack
   gives **Desktop / Terminal / Files** buttons on each client page — one
   click signs you in to MeshCentral on that device. See
