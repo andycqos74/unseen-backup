@@ -145,6 +145,13 @@ Keep this repo's server and agent as the control plane. Replace only the
 engine (`engine.go`, `restore.go`, server-side blob storage, manifests and
 GC) with Kopia.
 
+> **Implementation note (supersedes the table below):** Kopia is driven by
+> the existing agent shelling out to a `kopia` binary it fetches from the
+> server (option B), not linked as a library. The library is ~75 MB, ties the
+> agent to Kopia's internal API, and can't build with Go 1.20 for Windows 7;
+> the fetched binary keeps the one-installer experience. See
+> [kopia.md](kopia.md).
+
 ### 4.1 Who drives Kopia on the client: **the existing Go agent**
 
 Options:

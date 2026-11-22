@@ -390,6 +390,15 @@ assert big and z.read(big[0]) == open('$FIX/sub/big.bin','rb').read(), z.namelis
         || fail "kopia selective restore: $(capi GET /api/admin/runs/$KRR2)"
     pass "kopia restore (full and selected folder) matches source"
 
+    # A client can't record a snapshot that isn't its own (the server reads
+    # each one back from the repository), e.g. the server's own or a forged ID.
+    AID=$(jq -r .agent_id "$WORK/agent-state/creds.json"); ASEC=$(jq -r .secret "$WORK/agent-state/creds.json")
+    FORGED=$(curl -ksS -o /dev/null -w '%{http_code}' -H "X-Agent-Id: $AID" -H "X-Agent-Key: $ASEC" -H 'Content-Type: application/json' \
+        -d "{\"run_id\":\"x\",\"job_id\":\"$KJOB_ID\",\"snapshots\":[{\"id\":\"0123456789abcdef0123456789abcdef\",\"path\":\"/etc\"}]}" \
+        "$AGENT_BASE/api/agent/kopia/snapshots")
+    [ "$FORGED" = 403 ] || fail "forged Kopia commit accepted ($FORGED)"
+    pass "forged Kopia snapshot commit refused"
+
     # The client is append-only: it must not be able to delete its backups.
     KC="$WORK/agent-state/kopia"
     KPW=$(jq -r .password "$KC/conn.json")
