@@ -22,6 +22,7 @@ import (
 
 	"centralbackup/internal/kopia"
 	"centralbackup/internal/proto"
+	"centralbackup/internal/server/storage"
 	"centralbackup/internal/server/store"
 )
 
@@ -83,8 +84,10 @@ type kopiaEngine struct {
 	controlPass string
 	agentURL    string
 
-	syncTarget string // CB_KOPIA_SYNC_TO (off-site copy), set by kopiaSyncLoop
+	syncTarget string // CB_KOPIA_SYNC_TO (off-site copy)
 	syncEvery  time.Duration
+	syncMu     sync.Mutex
+	rclone     rcloneRunner // OneDrive/Google Drive destination (kopia_cloud.go)
 
 	treeMu    sync.Mutex
 	treeCache map[string][]proto.ManifestEntry
@@ -164,7 +167,11 @@ func (s *Server) initKopia(certFile, keyFile string) error {
 	if t := strings.TrimSpace(os.Getenv("CB_KOPIA_SYNC_TO")); t != "" {
 		k.syncTarget = t
 	}
+	k.syncEvery = 6 * time.Hour
 	go k.superviseServer()
+	if err := s.startCloudServer(); err != nil {
+		log.Printf("kopia: off-site destination: %v", err) // not fatal: fix it in Settings
+	}
 	go s.kopiaSyncLoop()
 	log.Printf("kopia: repository %s, repository server on %s (agents use %s)", cfg.Repo, cfg.Listen, k.agentURL)
 	return nil
@@ -710,24 +717,27 @@ func (s *Server) deleteKopiaSnapshot(sn *store.Snapshot) error {
 // if the server is lost.
 
 type kopiaSyncStatus struct {
-	Target   string `json:"target"`
-	LastRun  int64  `json:"last_run,omitempty"`
-	LastOK   int64  `json:"last_ok,omitempty"`
-	LastErr  string `json:"last_error,omitempty"`
-	Interval string `json:"interval"`
+	Target        string      `json:"target"`
+	FromEnv       bool        `json:"from_env,omitempty"`
+	Cloud         *kopiaCloud `json:"cloud,omitempty"`
+	RcloneRunning bool        `json:"rclone_running,omitempty"`
+	RcloneErr     string      `json:"rclone_error,omitempty"`
+	LastRun       int64       `json:"last_run,omitempty"`
+	LastOK        int64       `json:"last_ok,omitempty"`
+	LastErr       string      `json:"last_error,omitempty"`
+	Interval      string      `json:"interval"`
 }
 
 func (s *Server) kopiaSyncLoop() {
 	k := s.kopia
-	target := strings.TrimSpace(os.Getenv("CB_KOPIA_SYNC_TO"))
-	if k == nil || target == "" {
+	if k == nil {
 		return
 	}
 	every, err := time.ParseDuration(strings.TrimSpace(os.Getenv("CB_KOPIA_SYNC_INTERVAL")))
 	if err != nil || every < 10*time.Minute {
 		every = 6 * time.Hour
 	}
-	k.syncTarget, k.syncEvery = target, every
+	k.syncEvery = every
 	delay := 2 * time.Minute // let the server settle after start
 	if d, err := time.ParseDuration(os.Getenv("CB_KOPIA_SYNC_DELAY")); err == nil {
 		delay = d // tests
@@ -739,37 +749,84 @@ func (s *Server) kopiaSyncLoop() {
 	}
 }
 
+// syncTargetNow resolves the off-site target for this run: CB_KOPIA_SYNC_TO
+// if set, else the OneDrive/Google Drive destination connected in Settings.
+// ok is false when there is none.
+func (s *Server) syncTargetNow() (args []string, env map[string]string, label string, ok bool, err error) {
+	k := s.kopia
+	if k.syncTarget != "" {
+		return strings.Fields(k.syncTarget), nil, strings.Fields(k.syncTarget)[0], true, nil
+	}
+	c := s.loadKopiaCloud()
+	if c == nil {
+		return nil, nil, "", false, nil
+	}
+	args, env, err = s.cloudSyncArgs()
+	return args, env, string(c.Provider), true, err
+}
+
+// kopiaSyncOnce copies the repository off-site. Concurrent requests (the
+// schedule and "Sync now") collapse into one run.
 func (s *Server) kopiaSyncOnce() {
 	k := s.kopia
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Hour)
-	defer cancel()
+	if !k.syncMu.TryLock() {
+		return
+	}
+	defer k.syncMu.Unlock()
+	target, env, label, ok, err := s.syncTargetNow()
+	if !ok {
+		return
+	}
 	now := time.Now().Unix()
 	s.store.SetSetting("kopia_sync_last_run", fmt.Sprint(now))
-	args := append([]string{"repository", "sync-to"}, strings.Fields(k.syncTarget)...)
+	if err != nil {
+		s.store.SetSetting("kopia_sync_error", err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Hour)
+	defer cancel()
+	cli := *k.cli
+	cli.ExtraEnv = env
+	args := append([]string{"repository", "sync-to"}, target...)
 	args = append(args, "--delete", "--parallel=4")
-	if _, err := k.cli.Run(ctx, args...); err != nil {
+	if _, err := cli.Run(ctx, args...); err != nil {
 		log.Printf("kopia: off-site sync failed: %v", err)
 		s.store.SetSetting("kopia_sync_error", err.Error())
 		return
 	}
 	s.store.SetSetting("kopia_sync_last_ok", fmt.Sprint(now))
 	s.store.SetSetting("kopia_sync_error", "")
-	log.Printf("kopia: off-site copy up to date (%s)", strings.Fields(k.syncTarget)[0])
+	log.Printf("kopia: off-site copy up to date (%s)", label)
 }
 
 func (s *Server) kopiaSyncStatus() *kopiaSyncStatus {
-	if s.kopia == nil || s.kopia.syncTarget == "" {
+	if s.kopia == nil {
 		return nil
 	}
 	st := &kopiaSyncStatus{Interval: s.kopia.syncEvery.String()}
-	// Show the backend and bucket/path, not every flag.
-	for _, f := range strings.Fields(s.kopia.syncTarget) {
-		if !strings.HasPrefix(f, "-") || strings.HasPrefix(f, "--bucket=") || strings.HasPrefix(f, "--path=") ||
-			strings.HasPrefix(f, "--prefix=") || strings.HasPrefix(f, "--endpoint=") {
-			st.Target += f + " "
+	if s.kopia.syncTarget != "" {
+		// Show the backend and bucket/path, not every flag.
+		for _, f := range strings.Fields(s.kopia.syncTarget) {
+			if !strings.HasPrefix(f, "-") || strings.HasPrefix(f, "--bucket=") || strings.HasPrefix(f, "--path=") ||
+				strings.HasPrefix(f, "--prefix=") || strings.HasPrefix(f, "--endpoint=") {
+				st.Target += f + " "
+			}
 		}
+		st.Target = strings.TrimSpace(st.Target)
+		st.FromEnv = true
+	} else if c := s.loadKopiaCloud(); c != nil {
+		st.Target = providerLabel(c.Provider) + " — " + c.Folder
+		if c.Account != "" {
+			st.Target += " (" + c.Account + ")"
+		}
+		st.Cloud = c
+		r := &s.kopia.rclone
+		r.mu.Lock()
+		st.RcloneRunning, st.RcloneErr = r.running, r.lastErr
+		r.mu.Unlock()
+	} else {
+		return st // Kopia enabled, no off-site copy configured
 	}
-	st.Target = strings.TrimSpace(st.Target)
 	get := func(k string) int64 {
 		v, _ := s.store.GetSetting(k)
 		var n int64
@@ -779,4 +836,14 @@ func (s *Server) kopiaSyncStatus() *kopiaSyncStatus {
 	st.LastRun, st.LastOK = get("kopia_sync_last_run"), get("kopia_sync_last_ok")
 	st.LastErr, _ = s.store.GetSetting("kopia_sync_error")
 	return st
+}
+
+func providerLabel(p storage.Provider) string {
+	switch p {
+	case storage.ProviderOneDrive:
+		return "OneDrive"
+	case storage.ProviderGoogleDrive:
+		return "Google Drive"
+	}
+	return string(p)
 }

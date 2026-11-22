@@ -241,6 +241,7 @@ func (s *Server) handleStorageConnect(w http.ResponseWriter, r *http.Request) {
 	s.oauth.mu.Lock()
 	s.oauth.state = state
 	s.oauth.pending = cfg
+	s.oauth.purpose, s.oauth.folder = "", ""
 	s.oauth.mu.Unlock()
 
 	opts := append([]oauth2.AuthCodeOption{}, providerOAuthConfig[cfg.Provider].AuthParams...)
@@ -273,6 +274,7 @@ func (s *Server) handleStorageOAuthCallback(w http.ResponseWriter, r *http.Reque
 
 	s.oauth.mu.Lock()
 	want, pending := s.oauth.state, s.oauth.pending
+	purpose, folder := s.oauth.purpose, s.oauth.folder
 	s.oauth.state = "" // one-time
 	s.oauth.mu.Unlock()
 
@@ -298,6 +300,17 @@ func (s *Server) handleStorageOAuthCallback(w http.ResponseWriter, r *http.Reque
 	}
 	pending.RefreshToken = tok.RefreshToken
 	pending.Account = s.fetchAccountLabel(ctx, pending, tok.AccessToken)
+
+	if purpose == oauthPurposeKopia {
+		// The Kopia off-site destination: a separate record, never the
+		// built-in engine's active backend.
+		if err := s.finishKopiaCloud(ctx, pending, folder, tok); err != nil {
+			http.Redirect(w, r, "/settings?kopia_cloud_error="+urlQueryEscape(err.Error()), http.StatusFound)
+			return
+		}
+		http.Redirect(w, r, "/settings?kopia_cloud=connected", http.StatusFound)
+		return
+	}
 
 	if err := s.applyStorageConfig(pending); err != nil {
 		s.oauthRedirectResult(w, r, "connected, but could not activate storage: "+err.Error())

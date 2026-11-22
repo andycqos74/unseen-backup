@@ -252,6 +252,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 	s.registerAdminAPI(mux)
 	s.registerStorageAPI(mux)
 	s.registerRemoteAPI(mux)
+	s.registerKopiaCloudAPI(mux)
 
 	// Web GUI.
 	s.web.register(mux)

@@ -44,7 +44,8 @@ RUN set -e; mkdir -p /out/agents /out/bin; \
 
 # ---- central server image ----
 FROM alpine:3.21 AS server
-RUN apk add --no-cache ca-certificates tzdata
+# rclone: OneDrive / Google Drive as the Kopia off-site copy (docs/kopia.md).
+RUN apk add --no-cache ca-certificates tzdata rclone
 WORKDIR /app
 COPY --from=build /out/backup-server /app/backup-server
 # Prebuilt agent binaries, served at /dl/ for the client install scripts.

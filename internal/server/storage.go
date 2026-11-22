@@ -21,7 +21,14 @@ type oauthFlow struct {
 	mu      sync.Mutex
 	state   string
 	pending storage.Config
+	// purpose distinguishes the built-in engine's storage ("") from the
+	// Kopia off-site destination (oauthPurposeKopia); folder is the
+	// destination folder for the latter.
+	purpose string
+	folder  string
 }
+
+const oauthPurposeKopia = "kopia"
 
 func (s *Server) loadStorageConfig() storage.Config {
 	raw, err := s.store.GetSetting(storageConfigKey)
