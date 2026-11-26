@@ -255,7 +255,7 @@ func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request) {
 		// The base URL the agent should connect back to. Sent by the server
 		// rather than taken from the browser's address bar so that enrolling
 		// while browsing by IP still produces a working command.
-		"base_url": s.publicBaseURL(r),
+		"base_url": s.agentBaseURL(r),
 	})
 }
 

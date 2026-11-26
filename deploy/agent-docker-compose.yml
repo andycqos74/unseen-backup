@@ -16,7 +16,7 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
       target: agent
-    image: centralbackup/agent
+    image: unseen-backup/agent
     container_name: backup-agent
     restart: unless-stopped
     environment:

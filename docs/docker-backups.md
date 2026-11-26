@@ -21,7 +21,7 @@ On the Docker host, from a clone of this repo:
 docker compose -f deploy/agent-docker-compose.yml build
 ```
 
-This produces the `centralbackup/agent` image.
+This produces the `unseen-backup/agent` image.
 
 ## 2. Enroll the host as a client
 

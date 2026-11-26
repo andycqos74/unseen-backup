@@ -87,6 +87,11 @@ CB_PUBLIC_URL=https://backup.example.com:8443 \
   pin the server's certificate fingerprint, so a Cloudflare Tunnel or any
   other TLS-terminating proxy in front of the server will break them. See
   [docs/deployment.md](docs/deployment.md#3-reverse-proxies-tunnels-and-cloudflare).
+- To keep the GUI off the internet, set `CB_ADMIN_LISTEN=:8444`: port 8443
+  then serves agents only, and the GUI moves to 8444 (localhost only),
+  which you can put behind a Cloudflare Tunnel + Access. Enrolled agents
+  are unaffected. See
+  [Admin GUI behind a Cloudflare Tunnel](docs/deployment.md#admin-gui-behind-a-cloudflare-tunnel-separate-admin-listener).
 
 Prefer not to use Docker? The server is a single static binary — run
 `sudo CB_SERVER_NAME=… scripts/install-server.sh` for a systemd install

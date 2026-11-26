@@ -1,6 +1,6 @@
 # Multi-target build:
-#   docker build -f deploy/Dockerfile --target server -t centralbackup/server .
-#   docker build -f deploy/Dockerfile --target agent  -t centralbackup/agent .
+#   docker build -f deploy/Dockerfile --target server -t unseen-backup/server .
+#   docker build -f deploy/Dockerfile --target agent  -t unseen-backup/agent .
 FROM golang:1.25-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -34,7 +34,9 @@ ENV CB_DATA_DIR=/data \
     CB_LISTEN=:8443 \
     CB_AGENT_BIN_DIR=/app/agents
 VOLUME /data
-EXPOSE 8443
+# 8443: agents (and the GUI unless CB_ADMIN_LISTEN is set); 8444: the
+# optional separate admin listener.
+EXPOSE 8443 8444
 ENTRYPOINT ["/app/backup-server"]
 
 # ---- containerized agent image (for Docker hosts) ----

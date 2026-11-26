@@ -63,8 +63,26 @@ func (ui *webUI) page(name string) http.HandlerFunc {
 	}
 }
 
+// installScripts are the only static files the agent listener serves: the
+// paste-in install commands fetch them from the agent address.
+var installScripts = []string{"install-agent.sh", "install-agent.ps1"}
+
+// registerInstallScripts serves exactly the install scripts, by exact path,
+// so the agent listener exposes no other GUI asset.
+func (ui *webUI) registerInstallScripts(mux *http.ServeMux) {
+	for _, name := range installScripts {
+		name := name
+		mux.HandleFunc("GET /static/"+name, func(w http.ResponseWriter, r *http.Request) {
+			http.ServeFileFS(w, r, webFS, "static/"+name)
+		})
+	}
+}
+
 func (ui *webUI) register(mux *http.ServeMux) {
 	static, _ := fs.Sub(webFS, "static")
+	// GET /static/ is the less specific pattern, so in combined mode the
+	// install-script routes registered by registerInstallScripts win for
+	// those two files and this serves everything else.
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(static)))
 
 	mux.HandleFunc("GET /login", func(w http.ResponseWriter, r *http.Request) {

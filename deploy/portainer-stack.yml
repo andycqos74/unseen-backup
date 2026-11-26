@@ -14,6 +14,12 @@
 #   CB_PUBLIC_URL   externally reachable origin, e.g. https://backup.example.com:8443
 #   CB_OWNER        GitHub owner the images were published under
 #
+# Optional (separate admin listener — see docs/deployment.md §3):
+#   CB_ADMIN_LISTEN :8444 to move the GUI/admin API off the agent port; 8443
+#                   then serves agents only. The admin port is bound to
+#                   127.0.0.1 below — put cloudflared in front of it.
+#   CB_ADMIN_URL    browser address of the GUI, e.g. https://backup-admin.example.com
+#
 # IMPORTANT — the volumes below are declared `external` on purpose. Compose
 # normally prefixes volume names with the stack name, so deploying this as a
 # differently named stack would silently create *empty* volumes and the
@@ -25,19 +31,22 @@
 
 services:
   backup-server:
-    image: ghcr.io/${CB_OWNER}/centralbackup-server:${CB_TAG}
+    image: ghcr.io/${CB_OWNER}/unseen-backup-server:${CB_TAG}
     container_name: backup-server
     restart: unless-stopped
     ports:
       - "8443:8443"
+      - "127.0.0.1:8444:8444"
     environment:
       CB_SERVER_NAME: ${CB_SERVER_NAME}
       CB_PUBLIC_URL: ${CB_PUBLIC_URL}
+      CB_ADMIN_LISTEN: ${CB_ADMIN_LISTEN:-}
+      CB_ADMIN_URL: ${CB_ADMIN_URL:-}
     volumes:
       - backup-data:/data
 
   backup-agent:
-    image: ghcr.io/${CB_OWNER}/centralbackup-agent:${CB_TAG}
+    image: ghcr.io/${CB_OWNER}/unseen-backup-agent:${CB_TAG}
     container_name: backup-agent
     restart: unless-stopped
     environment:

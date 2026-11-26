@@ -1,26 +1,44 @@
 # Central backup server.
 #   docker compose -f deploy/docker-compose.yml up -d --build
 # Then open https://<host>:8443 and create the admin account.
+# (With CB_ADMIN_LISTEN set — see below — the GUI is on :8444 instead.)
 services:
   backup-server:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
       target: server
-    image: centralbackup/server
+    image: unseen-backup/server
     container_name: backup-server
     restart: unless-stopped
     ports:
       - "8443:8443"
+      # Admin listener (only used when CB_ADMIN_LISTEN is set): localhost
+      # only, never published to the internet.
+      - "127.0.0.1:8444:8444"
     environment:
       # Extra DNS names / IPs for the generated TLS certificate
       # (set this to the public name agents will connect to).
       CB_SERVER_NAME: ${CB_SERVER_NAME:-}
-      # The externally reachable origin, e.g. https://backup.example.com:8443.
+      # The address agents connect to, e.g. https://backup.example.com:8443.
       # Recommended: it pins the address baked into enrollment commands and
-      # the OAuth redirect URL, so browsing the GUI by IP can't mint a
-      # command pointing at that IP. Defaults to the browser's address.
+      # installers (and, without CB_ADMIN_URL, the OAuth redirect URL), so
+      # browsing the GUI by IP can't mint a command pointing at that IP.
+      # Defaults to the browser's address.
       CB_PUBLIC_URL: ${CB_PUBLIC_URL:-}
+      # --- Optional: separate admin listener (recommended for internet-
+      # facing servers). With CB_ADMIN_LISTEN set, port 8443 serves agents
+      # ONLY (no login page, no GUI, no admin API) and the GUI moves to
+      # :8444, which is published on 127.0.0.1 only — reach it through a
+      # Cloudflare Tunnel (cloudflared → https://backup-server:8444 with
+      # "No TLS Verify") or an SSH tunnel. Enrolled agents are unaffected:
+      # they keep using 8443 and the same certificate.
+      #   CB_ADMIN_LISTEN=:8444
+      #   CB_ADMIN_URL=https://backup-admin.example.com   (browser address of
+      #     the GUI; used for the storage OAuth redirect)
+      # In this mode CB_PUBLIC_URL must be the agent address.
+      CB_ADMIN_LISTEN: ${CB_ADMIN_LISTEN:-}
+      CB_ADMIN_URL: ${CB_ADMIN_URL:-}
     volumes:
       # All state: database, TLS cert and backup storage.
       # Mount a large disk here (or bind-mount a path for /data/storage).
