@@ -40,6 +40,47 @@ and MeshAgent — they never pass through the backup server.
   MeshCentral as any user. Generate it with `openssl rand -hex 80`, store it
   in Vaultwarden, and never put it in the repository.
 
+## One installer: the bootstrapper
+
+Clients need only the backup-agent installer. When remote access is
+configured, the backup agent installs MeshAgent itself, about 20 seconds after
+it starts:
+
+1. It asks the backup server for MeshAgent (`GET /api/agent/meshagent`) over
+   its existing, certificate-pinned connection — clients never have to trust
+   MeshCentral's self-signed certificate for this.
+2. The server fetches the right build from MeshCentral (Windows x64/x86/ARM64,
+   Linux x64/ARM64/x86) with the device group's settings embedded, and
+   records when it handed it out.
+3. The agent runs it silently (`-fullinstall` on Windows, `-install` on
+   Linux), checks the MeshAgent service now exists, and writes
+   `meshagent-installed` in its state directory.
+4. The client page links the new MeshCentral device **exactly**: it is the
+   device with the client's hostname whose first connection followed that
+   download, so other machines with the same name (tills, cloned PCs) don't
+   confuse it. Hostname matching remains the fallback for MeshAgents installed
+   some other way, and a device picked by hand is never replaced.
+
+Behaviour worth knowing:
+
+- **Installed once.** The marker file stops a reinstall after someone removes
+  MeshAgent on purpose. Delete `meshagent-installed` (in
+  `/var/lib/backup-agent` or `C:\ProgramData\BackupAgent`) to have it
+  installed again.
+- **Opt out** fleet-wide with `CB_MESH_AUTOINSTALL=false` on the server, or on
+  one machine by setting `CB_NO_REMOTE_ACCESS=1` in the agent's environment.
+- **Already has MeshAgent?** Nothing is installed; hostname matching (or the
+  picker) links it.
+- **Docker-host agent** (the containerized agent) skips it: MeshAgent would
+  land in the container, not on the host. Install MeshAgent on the host with
+  the Linux command from the enroll dialog.
+- Failures are logged by the agent (`remote access: …`) and retried every 30
+  minutes.
+- The installer also carries the client's ID as MeshAgent's *agent tag*,
+  and the server links by tag when MeshCentral reports one. MeshAgent 1.3.1
+  was not seen reporting it in testing, so the install-time match is what
+  links in practice.
+
 ## Setup
 
 DNS / tunnel:
@@ -106,11 +147,9 @@ Then:
    site administrator. Use the name you put in `CB_MESH_USER`. Turn on 2FA.
 2. Create a **device group** (*My Devices → Add Device Group*,
    "Manage using a software agent").
-3. In the backup GUI: *Clients → Enroll new client*. The dialog now has a
-   **Remote access agent (MeshCentral)** section with a Windows download and a
-   Linux one-liner for that group.
-4. Install MeshAgent on a client, open the client's page, and use
-   **Desktop / Terminal / Files**.
+3. Enroll clients as usual (*Clients → Enroll new client*, one installer).
+   Each backup agent installs MeshAgent into that group by itself.
+4. Open a client's page and use **Desktop / Terminal / Files**.
 
 ## Verify
 
@@ -168,3 +207,9 @@ with a live terminal session relayed through the agent port. (A remote
 *desktop* picture could not be shown: the test machine has no display.) The Docker stack
 definition itself was not run (no Docker in the build environment) — its
 config script was executed with test values.
+
+The bootstrapper was tested end to end on Linux: the real backup agent
+fetched MeshAgent through the backup server (which pulled it from MeshCentral),
+installed it, detected the service, and the client page linked the new device
+exactly while three other devices had the same hostname. The Windows path
+(service detection, `-fullinstall`) is covered by build and code review only.

@@ -43,9 +43,10 @@ type Config struct {
 	// nil when CB_MESH_URL is unset. MeshGroup names the device group new
 	// clients join. MeshErr records an invalid MeshCentral configuration,
 	// reported by New so a typo fails at startup.
-	Mesh      *meshcentral.Client
-	MeshGroup string
-	MeshErr   error
+	Mesh            *meshcentral.Client
+	MeshGroup       string
+	MeshAutoInstall bool // backup agents install MeshAgent (CB_MESH_AUTOINSTALL, default on)
+	MeshErr         error
 }
 
 func ConfigFromEnv() Config {
@@ -56,21 +57,22 @@ func ConfigFromEnv() Config {
 		return def
 	}
 	dataDir := get("CB_DATA_DIR", "./data")
-	mesh, meshGroup, meshErr := meshConfigFromEnv()
+	mesh, meshGroup, meshAuto, meshErr := meshConfigFromEnvEx()
 	return Config{
-		Mesh:        mesh,
-		MeshGroup:   meshGroup,
-		MeshErr:     meshErr,
-		Listen:      get("CB_LISTEN", ":8443"),
-		AdminListen: get("CB_ADMIN_LISTEN", ""),
-		AdminURL:    get("CB_ADMIN_URL", ""),
-		DataDir:     dataDir,
-		StorageDir:  get("CB_STORAGE_DIR", filepath.Join(dataDir, "storage")),
-		ServerName:  get("CB_SERVER_NAME", ""),
-		PublicURL:   get("CB_PUBLIC_URL", ""),
-		CertFile:    get("CB_TLS_CERT", ""),
-		KeyFile:     get("CB_TLS_KEY", ""),
-		AgentBins:   get("CB_AGENT_BIN_DIR", "./agents"),
+		Mesh:            mesh,
+		MeshGroup:       meshGroup,
+		MeshAutoInstall: meshAuto,
+		MeshErr:         meshErr,
+		Listen:          get("CB_LISTEN", ":8443"),
+		AdminListen:     get("CB_ADMIN_LISTEN", ""),
+		AdminURL:        get("CB_ADMIN_URL", ""),
+		DataDir:         dataDir,
+		StorageDir:      get("CB_STORAGE_DIR", filepath.Join(dataDir, "storage")),
+		ServerName:      get("CB_SERVER_NAME", ""),
+		PublicURL:       get("CB_PUBLIC_URL", ""),
+		CertFile:        get("CB_TLS_CERT", ""),
+		KeyFile:         get("CB_TLS_KEY", ""),
+		AgentBins:       get("CB_AGENT_BIN_DIR", "./agents"),
 	}
 }
 
@@ -109,8 +111,9 @@ type Server struct {
 	web *webUI
 
 	// mesh is the MeshCentral integration, nil when not configured.
-	mesh          *meshcentral.Client
-	meshGroupName string
+	mesh            *meshcentral.Client
+	meshGroupName   string
+	meshAutoInstall bool
 }
 
 // backend returns the currently active storage backend.
@@ -169,8 +172,9 @@ func New(cfg Config) (*Server, error) {
 		fingerprint: fp,
 		tlsCert:     cert,
 
-		mesh:          cfg.Mesh,
-		meshGroupName: cfg.MeshGroup,
+		mesh:            cfg.Mesh,
+		meshGroupName:   cfg.MeshGroup,
+		meshAutoInstall: cfg.MeshAutoInstall,
 	}
 	if err := s.initStorage(); err != nil {
 		return nil, fmt.Errorf("open storage: %w", err)
@@ -216,6 +220,7 @@ func (s *Server) registerAgentRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/agent/manifests/{id}", s.agentAuth(s.handleManifestGet))
 	mux.HandleFunc("GET /api/agent/transfers/{id}/content", s.agentAuth(s.handleTransferContent))
 	mux.HandleFunc("PUT /api/agent/transfers/{id}/content", s.agentAuth(s.handleTransferUpload))
+	mux.HandleFunc("GET /api/agent/meshagent", s.agentAuth(s.handleAgentMeshInstaller))
 
 	// Prebuilt agent binaries for the install scripts (not secret).
 	mux.Handle("GET /dl/", http.StripPrefix("/dl/", http.FileServer(http.Dir(s.cfg.AgentBins))))

@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"sort"
 	"strings"
@@ -44,6 +46,12 @@ type Node struct {
 	Computer string `json:"computer"` // computer name reported by the agent
 	MeshID   string `json:"mesh_id"`  // "mesh//<base64>"
 	Online   bool   `json:"online"`
+	// Tag is the agent tag from the installer's settings (Tag= in the .msh).
+	// The backup agent installs MeshAgent with its own agent ID as the tag,
+	// which links the two exactly.
+	Tag string `json:"tag,omitempty"`
+	// FirstConnect is when MeshCentral first saw this device.
+	FirstConnect time.Time `json:"first_connect,omitempty"`
 }
 
 // ShortID is the node id without the "node/<domain>/" prefix, as used in
@@ -220,6 +228,10 @@ func (c *Client) Inventory(ctx context.Context) (Inventory, error) {
 				Name  string `json:"name"`
 				RName string `json:"rname"`
 				Conn  int    `json:"conn"`
+				First int64  `json:"firstconnect"` // unix milliseconds
+				Agent struct {
+					Tag string `json:"tag"`
+				} `json:"agent"`
 			} `json:"nodes"`
 		}
 		_, data, err := conn.ReadMessage()
@@ -253,7 +265,8 @@ func (c *Client) Inventory(ctx context.Context) (Inventory, error) {
 				for _, n := range list {
 					inv.Nodes = append(inv.Nodes, Node{
 						ID: n.ID, Name: n.Name, Computer: n.RName, MeshID: meshID,
-						Online: n.Conn&1 != 0,
+						Online: n.Conn&1 != 0, Tag: n.Agent.Tag,
+						FirstConnect: msTime(n.First),
 					})
 				}
 			}
@@ -380,4 +393,81 @@ func Match(nodes []Node, hostname string) []Node {
 		return byComputer
 	}
 	return byName
+}
+
+// Installer describes the MeshAgent build for one platform.
+type Installer struct {
+	FileName string   // name to save it under on the client
+	Args     []string // arguments that install it silently as a service
+}
+
+// InstallerFor maps a Go GOOS/GOARCH to MeshCentral's agent types and the
+// silent-install arguments. ok is false for platforms MeshAgent isn't
+// offered for here.
+func InstallerFor(goos, goarch string) (archID int, inst Installer, ok bool) {
+	switch goos + "/" + goarch {
+	case "windows/amd64":
+		return 4, Installer{"meshagent64.exe", []string{"-fullinstall"}}, true
+	case "windows/386":
+		return 3, Installer{"meshagent32.exe", []string{"-fullinstall"}}, true
+	case "windows/arm64":
+		return 43, Installer{"meshagent-arm64.exe", []string{"-fullinstall"}}, true
+	case "linux/amd64":
+		return 6, Installer{"meshagent", []string{"-install"}}, true
+	case "linux/arm64":
+		return 32, Installer{"meshagent", []string{"-install"}}, true
+	case "linux/386":
+		return 5, Installer{"meshagent", []string{"-install"}}, true
+	}
+	return 0, Installer{}, false
+}
+
+// InstallerURL is the server-side (API origin) download of MeshAgent for a
+// platform, with the device group's settings and tag embedded. Windows
+// builds embed the settings via meshid=; other platforms get MeshCentral's
+// self-installing build (meshinstall=<archid>), where id= is the group.
+func (c *Client) InstallerURL(meshID string, archID int, goos, tag string) string {
+	q := url.Values{}
+	if goos == "windows" {
+		q.Set("id", fmt.Sprint(archID))
+		q.Set("meshid", ShortID(meshID))
+	} else {
+		q.Set("id", ShortID(meshID))
+		q.Set("meshinstall", fmt.Sprint(archID))
+	}
+	q.Set("installflags", "0")
+	if tag != "" {
+		q.Set("tag", tag)
+	}
+	return strings.TrimRight(c.apiBase(), "/") + "/meshagents?" + q.Encode()
+}
+
+// FetchInstaller downloads the tagged MeshAgent installer from MeshCentral's
+// API origin. The caller closes the body.
+func (c *Client) FetchInstaller(ctx context.Context, meshID, goos, goarch, tag string) (io.ReadCloser, Installer, error) {
+	archID, inst, ok := InstallerFor(goos, goarch)
+	if !ok {
+		return nil, inst, fmt.Errorf("no MeshAgent for %s/%s", goos, goarch)
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", c.InstallerURL(meshID, archID, goos, tag), nil)
+	if err != nil {
+		return nil, inst, err
+	}
+	hc := &http.Client{Transport: &http.Transport{TLSClientConfig: c.tlsConfig(), Proxy: nil}}
+	res, err := hc.Do(req)
+	if err != nil {
+		return nil, inst, fmt.Errorf("MeshCentral: download agent: %w", err)
+	}
+	if res.StatusCode != http.StatusOK {
+		res.Body.Close()
+		return nil, inst, fmt.Errorf("MeshCentral: download agent: %s", res.Status)
+	}
+	return res.Body, inst, nil
+}
+
+func msTime(ms int64) time.Time {
+	if ms <= 0 {
+		return time.Time{}
+	}
+	return time.UnixMilli(ms)
 }

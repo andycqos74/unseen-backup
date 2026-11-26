@@ -42,9 +42,10 @@ Linux:        chmod +x backup-agent-installer &amp;&amp; sudo ./backup-agent-ins
     <h3>Remote access agent (MeshCentral)</h3>
     <p class="muted" id="mesh-err" hidden></p>
     <div id="mesh-ok" hidden>
-      <p>Install MeshAgent on the client too, for remote desktop, terminal and
-        files. It joins device group <b id="mesh-group"></b> and links to this
-        client by hostname.</p>
+      <p>Nothing extra to do: once enrolled, the backup agent installs MeshAgent
+        itself (device group <b id="mesh-group"></b>) and links it to this
+        client. The links below are only for machines that should have
+        MeshAgent without the backup agent, or to install it by hand.</p>
       <div class="row"><a class="btn" id="mesh-win" href="#">MeshAgent for Windows (x64)</a></div>
       <p class="muted">Run it as Administrator and click <b>Install</b> (silent: run it with <code>-fullinstall</code>).
         To fetch it on the client without signing in (self-signed certificate):</p>
