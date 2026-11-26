@@ -33,7 +33,7 @@ ARG KOPIA_VERSION=v0.23.1
 RUN set -e; mkdir -p /out/agents /out/bin; \
     if [ -n "$KOPIA_VERSION" ]; then \
       CGO_ENABLED=0 GOBIN=/out/bin go install github.com/kopia/kopia@${KOPIA_VERSION}; \
-      for t in linux/amd64 linux/arm64 windows/amd64 windows/arm64 darwin/amd64 darwin/arm64; do \
+      for t in linux/amd64 linux/arm64 windows/amd64; do \
         os=${t%/*}; arch=${t#*/}; ext=""; [ "$os" = windows ] && ext=".exe"; \
         CGO_ENABLED=0 GOOS=$os GOARCH=$arch go install github.com/kopia/kopia@${KOPIA_VERSION}; \
         src="$(go env GOPATH)/bin/${os}_${arch}/kopia$ext"; \

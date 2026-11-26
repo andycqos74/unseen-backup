@@ -73,6 +73,9 @@ compressed and deduplicated, stored on the server's local storage.
   **OneDrive** via an OAuth connect flow in the GUI. See
   [docs/storage.md](docs/storage.md).
 
+> **Deploying the whole platform** (backup + Kopia + remote access behind a
+> Cloudflare Tunnel)? Start with [docs/full-stack.md](docs/full-stack.md).
+
 ## Quick start — server
 
 Requirements: Docker + Docker Compose on the machine that will hold backups.

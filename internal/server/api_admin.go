@@ -632,5 +632,6 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		"stats":       stats,
 		"username":    s.sessionUser(r).Username,
 		"kopia":       s.kopia != nil,
+		"kopia_sync":  s.kopiaSyncStatus(),
 	})
 }

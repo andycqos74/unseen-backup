@@ -27,16 +27,15 @@ import (
 // connection settings arrive over the control channel (MsgKopiaConfig).
 // Everything lives under <state>/kopia.
 
-// kopiaSupported reports whether a kopia build is offered for this platform
-// (the server ships linux/windows/darwin on amd64/arm64). The Windows 7
-// build (windows/386) has none and keeps the built-in engine.
+// kopiaSupported reports whether the server ships a kopia build for this
+// platform: Linux x64/ARM64 and Windows x64, the platforms agents ship for.
+// 32-bit Windows (including the Windows 7 build) keeps the built-in engine.
 func kopiaSupported() bool {
-	switch runtime.GOOS {
-	case "linux", "windows", "darwin":
-	default:
-		return false
+	switch runtime.GOOS + "/" + runtime.GOARCH {
+	case "linux/amd64", "linux/arm64", "windows/amd64":
+		return true
 	}
-	return runtime.GOARCH == "amd64" || runtime.GOARCH == "arm64"
+	return false
 }
 
 func helloCaps() []string {

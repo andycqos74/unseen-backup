@@ -17,6 +17,14 @@
 <p><button class="btn" onclick="runGC()">Run retention + cleanup now</button>
 <span class="muted">Applies retention policies and removes unreferenced data. Also runs automatically once a day.</span></p>
 
+<div id="kopia-sync-card" hidden>
+<h2>Off-site copy (Kopia)</h2>
+<div class="form-card">
+  <p>The Kopia repository is mirrored to <code id="ks-target"></code> every <span id="ks-every"></span>.</p>
+  <p id="ks-status" class="muted"></p>
+</div>
+</div>
+
 <h2>Backup storage backend</h2>
 <div class="card">
   <p>Where new backups are stored. <b>Changing this does not move existing
@@ -117,6 +125,15 @@ async function saveS3() {
 async function load() {
   const d = await api('GET', '/api/admin/settings');
   el('fp').textContent = d.fingerprint;
+  if (d.kopia_sync) {
+    const k = d.kopia_sync;
+    el('kopia-sync-card').hidden = false;
+    el('ks-target').textContent = k.target;
+    el('ks-every').textContent = k.interval;
+    el('ks-status').textContent = k.last_error
+      ? 'Last attempt ' + fmtTime(k.last_run) + ' FAILED: ' + k.last_error
+      : (k.last_ok ? 'Last successful copy: ' + fmtTime(k.last_ok) : 'Not copied yet (first copy runs a few minutes after start).');
+  }
   el('st-snaps').textContent = d.stats.Snapshots;
   el('st-blobs').textContent = d.stats.Blobs;
   el('st-stored').textContent = fmtBytes(d.stats.SizeStored);

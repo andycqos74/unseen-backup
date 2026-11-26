@@ -145,6 +145,13 @@ Keep this repo's server and agent as the control plane. Replace only the
 engine (`engine.go`, `restore.go`, server-side blob storage, manifests and
 GC) with Kopia.
 
+> **Implementation note (supersedes the table below):** Kopia is driven by
+> the existing agent shelling out to a `kopia` binary it fetches from the
+> server (option B), not linked as a library. The library is ~75 MB, ties the
+> agent to Kopia's internal API, and can't build with Go 1.20 for Windows 7;
+> the fetched binary keeps the one-installer experience. See
+> [kopia.md](kopia.md).
+
 ### 4.1 Who drives Kopia on the client: **the existing Go agent**
 
 Options:
@@ -375,7 +382,7 @@ Things to watch:
 |---|---|---|
 | 1 | **Done:** split the controller into agent and admin listeners with two URLs (§7); MeshCentral in the stack with Desktop/Terminal/Files buttons and MeshAgent install links ([remote-access.md](remote-access.md)). Then **done:** the bootstrapper — the backup agent installs MeshAgent itself and links it exactly. Original plan: add MeshCentral to the stack and put the UIs behind the tunnel and Access. Install MeshAgent from the bootstrapper. Add Desktop/Terminal buttons on the client page. | Remote access in one console. No engine risk. |
 | 2 | **Done** ([kopia.md](kopia.md)): the backup server runs the Kopia repository server itself (no extra container), provisions append-only Kopia users per client, sets policies centrally; agents fetch kopia from the server. Original plan: Confirm Kopia's VSS policy and repository-server ACLs on a Windows 10 test box. Add the Kopia server container. Add a second engine to the agent (option A) chosen per job. The controller provisions Kopia users and policies and lists Kopia snapshots alongside existing ones. | Both engines run in parallel. New jobs use Kopia. |
-| 3 | **Mostly done:** restore to client and browser browse/download work for Kopia snapshots, and Kopia is the default engine when enabled. **Remaining:** `sync-to` off-site mirror, S3-backed repository, agent self-update. Original plan: Port restore (to client, and browser download) to Kopia. Make Kopia the default engine. Set up `sync-to` for an off-site mirror. Keep the legacy engine only for the Windows 7 build. | Old snapshots age out, and engine code shrinks. |
+| 3 | **Mostly done:** restore to client and browser browse/download work for Kopia snapshots, and Kopia is the default engine when enabled. Off-site mirror (`sync-to`) and agent self-update are **done** too. **Remaining:** S3-backed primary repository, Headscale, code signing. Original plan: Port restore (to client, and browser download) to Kopia. Make Kopia the default engine. Set up `sync-to` for an off-site mirror. Keep the legacy engine only for the Windows 7 build. | Old snapshots age out, and engine code shrinks. |
 | 4 (optional) | Headscale for zero public ports. Code-signed installer. Agent self-update. | Hardening. |
 
 Rough size: phase 1 is days. Phases 2–3 are a few weeks for one developer,

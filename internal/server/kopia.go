@@ -83,6 +83,9 @@ type kopiaEngine struct {
 	controlPass string
 	agentURL    string
 
+	syncTarget string // CB_KOPIA_SYNC_TO (off-site copy), set by kopiaSyncLoop
+	syncEvery  time.Duration
+
 	treeMu    sync.Mutex
 	treeCache map[string][]proto.ManifestEntry
 	treeOrder []string
@@ -145,15 +148,24 @@ func (s *Server) initKopia(certFile, keyFile string) error {
 	}
 	// Global defaults, re-applied each start: zstd compression, and Windows
 	// shadow copies (VSS) so open and locked files are captured consistently.
+	// Global retention keeps everything: if a job's policy ever failed to
+	// match the path Kopia records (case, separators), the fallback must not
+	// be Kopia's own defaults, which delete.
 	if _, err := k.cli.Run(ctx, "policy", "set", "--global", "--compression=zstd",
-		"--enable-volume-shadow-copy=when-available"); err != nil {
+		"--enable-volume-shadow-copy=when-available",
+		"--keep-latest=1000000", "--keep-hourly=0", "--keep-daily=0", "--keep-weekly=0",
+		"--keep-monthly=0", "--keep-annual=0"); err != nil {
 		return fmt.Errorf("kopia: set global policy: %w", err)
 	}
 	if err := k.ensureACLs(ctx); err != nil {
 		return err
 	}
 	s.kopia = k
+	if t := strings.TrimSpace(os.Getenv("CB_KOPIA_SYNC_TO")); t != "" {
+		k.syncTarget = t
+	}
 	go k.superviseServer()
+	go s.kopiaSyncLoop()
 	log.Printf("kopia: repository %s, repository server on %s (agents use %s)", cfg.Repo, cfg.Listen, k.agentURL)
 	return nil
 }
@@ -327,31 +339,81 @@ func (s *Server) sendKopiaConfig(agentID string) {
 // policy, before every run. Clients can't change policies themselves.
 func (s *Server) applyKopiaPolicy(ctx context.Context, job proto.Job) error {
 	for _, p := range job.Paths {
-		src := sourceFor(job.AgentID, p)
-		// Clearing and adding ignore rules must be separate invocations:
-		// in one command, --clear-ignore wins over --add-ignore.
-		if _, err := s.kopia.cli.Run(ctx, "policy", "set", src, "--clear-ignore"); err != nil {
-			return err
-		}
-		args := []string{"policy", "set", src,
-			"--keep-hourly=0", "--keep-weekly=0", "--keep-monthly=0", "--keep-annual=0"}
-		switch {
-		case job.KeepLast <= 0 && job.KeepDays <= 0:
-			// "Keep everything", as the built-in engine does without a policy.
-			args = append(args, "--keep-latest=1000000", "--keep-daily=0")
-		default:
-			args = append(args, fmt.Sprintf("--keep-latest=%d", job.KeepLast), fmt.Sprintf("--keep-daily=%d", job.KeepDays))
-		}
-		for _, ex := range job.Excludes {
-			if ex = strings.TrimSpace(ex); ex != "" {
-				args = append(args, "--add-ignore="+ex)
-			}
-		}
-		if _, err := s.kopia.cli.Run(ctx, args...); err != nil {
+		if err := s.setKopiaPolicy(ctx, job, p); err != nil {
 			return err
 		}
 	}
 	return s.kopia.refresh(ctx)
+}
+
+// setKopiaPolicy writes one source's policy. Retention: "keep last N" is
+// keep-latest; "also keep newer than N days" keeps one snapshot per hour
+// and per day for those N days (Kopia has no plain age rule); neither set
+// keeps everything.
+func (s *Server) setKopiaPolicy(ctx context.Context, job proto.Job, path string) error {
+	src := sourceFor(job.AgentID, path)
+	// Clearing and adding ignore rules must be separate invocations: in one
+	// command, --clear-ignore wins over --add-ignore.
+	if _, err := s.kopia.cli.Run(ctx, "policy", "set", src, "--clear-ignore"); err != nil {
+		return err
+	}
+	args := []string{"policy", "set", src, "--keep-weekly=0", "--keep-monthly=0", "--keep-annual=0"}
+	if job.KeepLast <= 0 && job.KeepDays <= 0 {
+		args = append(args, "--keep-latest=1000000", "--keep-hourly=0", "--keep-daily=0")
+	} else {
+		args = append(args, fmt.Sprintf("--keep-latest=%d", job.KeepLast),
+			fmt.Sprintf("--keep-hourly=%d", job.KeepDays*24), fmt.Sprintf("--keep-daily=%d", job.KeepDays))
+	}
+	for _, ex := range job.Excludes {
+		if ex = strings.TrimSpace(ex); ex != "" {
+			args = append(args, "--add-ignore="+ex)
+		}
+	}
+	_, err := s.kopia.cli.Run(ctx, args...)
+	return err
+}
+
+// verifyKopiaSnapshot reads a snapshot manifest from the repository and
+// checks it belongs to the agent; the returned record comes from the
+// repository, not from what the agent claimed.
+func (s *Server) verifyKopiaSnapshot(ctx context.Context, agentID, id string) (proto.KopiaSnapshot, error) {
+	if !validObjectID(id) {
+		return proto.KopiaSnapshot{}, fmt.Errorf("invalid snapshot id")
+	}
+	out, err := s.kopia.cli.Run(ctx, "manifest", "show", id)
+	if err != nil {
+		return proto.KopiaSnapshot{}, fmt.Errorf("snapshot %s not found", id)
+	}
+	var body []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), "//") {
+			body = append(body, line)
+		}
+	}
+	// The manifest body has an empty "id" (the ID is in the header), so
+	// decode it directly rather than with DecodeSnapshots.
+	var m kopia.Snapshot
+	if err := json.Unmarshal([]byte(strings.Join(body, "\n")), &m); err != nil {
+		return proto.KopiaSnapshot{}, fmt.Errorf("snapshot %s: unreadable manifest", id)
+	}
+	if m.Source.UserName != kopiaUser || m.Source.Host != agentID {
+		return proto.KopiaSnapshot{}, fmt.Errorf("snapshot %s belongs to %s@%s", id, m.Source.UserName, m.Source.Host)
+	}
+	sum := m.RootEntry.Summ
+	return proto.KopiaSnapshot{ID: id, Path: m.Source.Path, Root: m.RootEntry.Obj,
+		Files: sum.Files, Bytes: sum.Size, NumFailed: sum.NumFailed}, nil
+}
+
+func validObjectID(id string) bool {
+	if id == "" || len(id) > 128 {
+		return false
+	}
+	for _, c := range id {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9') {
+			return false
+		}
+	}
+	return true
 }
 
 // expireKopia applies retention (clients cannot delete) and drops snapshot
@@ -425,6 +487,22 @@ func (s *Server) handleKopiaCommit(w http.ResponseWriter, r *http.Request, agent
 		httpError(w, http.StatusForbidden, "not your job")
 		return
 	}
+	// Never trust the agent's description of a snapshot: a compromised client
+	// could otherwise plant another client's snapshot IDs (and later have
+	// them deleted with this row). Read each one back from the repository.
+	vctx, vcancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer vcancel()
+	seen := map[string]bool{}
+	for i, x := range c.Snapshots {
+		v, err := s.verifyKopiaSnapshot(vctx, agentID, x.ID)
+		if err != nil || seen[x.ID] {
+			log.Printf("kopia: agent %s committed a snapshot it doesn't own: %v", agentID, err)
+			httpError(w, http.StatusForbidden, "snapshot does not belong to this client")
+			return
+		}
+		seen[x.ID] = true
+		c.Snapshots[i] = v
+	}
 	key, _ := json.Marshal(c.Snapshots)
 	sn := store.Snapshot{
 		ID: store.NewID(), Backend: kopiaBackend, JobID: c.JobID, AgentID: agentID, RunID: c.RunID,
@@ -440,9 +518,18 @@ func (s *Server) handleKopiaCommit(w http.ResponseWriter, r *http.Request, agent
 		httpError(w, http.StatusInternalServerError, "database error")
 		return
 	}
+	job := row.Job
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
+		// Re-apply the job's policy to the paths exactly as Kopia recorded
+		// them, so retention always matches what expiry evaluates.
+		for _, x := range c.Snapshots {
+			if err := s.setKopiaPolicy(ctx, job, x.Path); err != nil {
+				log.Printf("kopia: policy for %s: %v", x.Path, err)
+				return // don't expire without the job's policy in place
+			}
+		}
 		if err := s.expireKopia(ctx, sources); err != nil {
 			log.Printf("kopia: expire after run %s: %v", c.RunID, err)
 		}
@@ -608,4 +695,88 @@ func (s *Server) deleteKopiaSnapshot(sn *store.Snapshot) error {
 		}
 	}
 	return s.store.DeleteSnapshot(sn.ID)
+}
+
+// Off-site copy: `kopia repository sync-to` mirrors the (encrypted)
+// repository to a second location on a schedule. CB_KOPIA_SYNC_TO holds the
+// sync-to target as kopia arguments, e.g.
+//
+//	s3 --bucket=my-backups --endpoint=s3.eu-central-003.backblazeb2.com --prefix=unseen/
+//
+// with credentials in the environment (AWS_ACCESS_KEY_ID /
+// AWS_SECRET_ACCESS_KEY for any S3-compatible store), never in the
+// arguments. CB_KOPIA_SYNC_INTERVAL (default 6h) sets the cadence. The copy
+// is a complete repository: connect to it with the same password to restore
+// if the server is lost.
+
+type kopiaSyncStatus struct {
+	Target   string `json:"target"`
+	LastRun  int64  `json:"last_run,omitempty"`
+	LastOK   int64  `json:"last_ok,omitempty"`
+	LastErr  string `json:"last_error,omitempty"`
+	Interval string `json:"interval"`
+}
+
+func (s *Server) kopiaSyncLoop() {
+	k := s.kopia
+	target := strings.TrimSpace(os.Getenv("CB_KOPIA_SYNC_TO"))
+	if k == nil || target == "" {
+		return
+	}
+	every, err := time.ParseDuration(strings.TrimSpace(os.Getenv("CB_KOPIA_SYNC_INTERVAL")))
+	if err != nil || every < 10*time.Minute {
+		every = 6 * time.Hour
+	}
+	k.syncTarget, k.syncEvery = target, every
+	delay := 2 * time.Minute // let the server settle after start
+	if d, err := time.ParseDuration(os.Getenv("CB_KOPIA_SYNC_DELAY")); err == nil {
+		delay = d // tests
+	}
+	time.Sleep(delay)
+	for {
+		s.kopiaSyncOnce()
+		time.Sleep(every)
+	}
+}
+
+func (s *Server) kopiaSyncOnce() {
+	k := s.kopia
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Hour)
+	defer cancel()
+	now := time.Now().Unix()
+	s.store.SetSetting("kopia_sync_last_run", fmt.Sprint(now))
+	args := append([]string{"repository", "sync-to"}, strings.Fields(k.syncTarget)...)
+	args = append(args, "--delete", "--parallel=4")
+	if _, err := k.cli.Run(ctx, args...); err != nil {
+		log.Printf("kopia: off-site sync failed: %v", err)
+		s.store.SetSetting("kopia_sync_error", err.Error())
+		return
+	}
+	s.store.SetSetting("kopia_sync_last_ok", fmt.Sprint(now))
+	s.store.SetSetting("kopia_sync_error", "")
+	log.Printf("kopia: off-site copy up to date (%s)", strings.Fields(k.syncTarget)[0])
+}
+
+func (s *Server) kopiaSyncStatus() *kopiaSyncStatus {
+	if s.kopia == nil || s.kopia.syncTarget == "" {
+		return nil
+	}
+	st := &kopiaSyncStatus{Interval: s.kopia.syncEvery.String()}
+	// Show the backend and bucket/path, not every flag.
+	for _, f := range strings.Fields(s.kopia.syncTarget) {
+		if !strings.HasPrefix(f, "-") || strings.HasPrefix(f, "--bucket=") || strings.HasPrefix(f, "--path=") ||
+			strings.HasPrefix(f, "--prefix=") || strings.HasPrefix(f, "--endpoint=") {
+			st.Target += f + " "
+		}
+	}
+	st.Target = strings.TrimSpace(st.Target)
+	get := func(k string) int64 {
+		v, _ := s.store.GetSetting(k)
+		var n int64
+		fmt.Sscan(v, &n)
+		return n
+	}
+	st.LastRun, st.LastOK = get("kopia_sync_last_run"), get("kopia_sync_last_ok")
+	st.LastErr, _ = s.store.GetSetting("kopia_sync_error")
+	return st
 }

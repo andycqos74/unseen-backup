@@ -46,6 +46,7 @@ type agentService struct {
 
 func (s *agentService) Execute(args []string, req <-chan svc.ChangeRequest, status chan<- svc.Status) (bool, uint32) {
 	status <- svc.Status{State: svc.StartPending}
+	ensureRestartOnUpdate()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -144,6 +145,9 @@ func installService(stateDir, configPath string) error {
 		{Type: mgr.ServiceRestart, Delay: 30 * time.Second},
 		{Type: mgr.ServiceRestart, Delay: 60 * time.Second},
 	}, 86400)
+	// Also restart when the agent stops itself with an error exit code
+	// (self-update does that), not only on a crash.
+	s.SetRecoveryActionsOnNonCrashFailures(true)
 
 	eventlog.InstallAsEventCreate(svcName, eventlog.Error|eventlog.Warning|eventlog.Info)
 	if err := s.Start(); err != nil {
@@ -194,4 +198,29 @@ func controlService(action string) error {
 	}
 	fmt.Println("ok")
 	return nil
+}
+
+// ensureRestartOnUpdate makes sure the service manager restarts the agent
+// when it exits with an error code on purpose (self-update), for services
+// installed before install set this. Best effort: needs the rights the
+// service account (LocalSystem) has.
+func ensureRestartOnUpdate() {
+	m, err := mgr.Connect()
+	if err != nil {
+		return
+	}
+	defer m.Disconnect()
+	s, err := m.OpenService(svcName)
+	if err != nil {
+		return
+	}
+	defer s.Close()
+	if acts, err := s.RecoveryActions(); err == nil && len(acts) == 0 {
+		s.SetRecoveryActions([]mgr.RecoveryAction{
+			{Type: mgr.ServiceRestart, Delay: 10 * time.Second},
+			{Type: mgr.ServiceRestart, Delay: 30 * time.Second},
+			{Type: mgr.ServiceRestart, Delay: 60 * time.Second},
+		}, 86400)
+	}
+	s.SetRecoveryActionsOnNonCrashFailures(true)
 }

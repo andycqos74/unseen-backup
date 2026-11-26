@@ -33,15 +33,26 @@ the GUI, job sync with `agent.yaml` — and Kopia does the storage:
   read its own policy, but not delete snapshots or change policies. A
   compromised client cannot destroy its own backups. Retention runs on the
   server.
-- **Policies are central.** Before each run the server writes the job's
-  excludes and retention as Kopia policy for each path (*Keep last N* →
-  keep-latest, *newer than N days* → keep-daily; neither set → keep
-  everything). Expiry runs after each run and daily.
+- **Policies are central.** Before each run (and again after it, for the
+  path exactly as Kopia recorded it) the server writes the job's excludes
+  and retention as Kopia policy: *Keep last N* → keep-latest N; *also keep
+  newer than N days* → one snapshot per hour and per day for N days (Kopia
+  has no plain age rule, so runs more frequent than hourly are thinned to
+  one an hour beyond the last N); neither set → keep everything. The global
+  policy keeps everything, so a path that somehow doesn't match its job's
+  policy is never pruned by Kopia's defaults. Expiry runs after each run and
+  daily; the server is the repository's maintenance owner
+  (`controller@backup-server`), so freed space is reclaimed by Kopia's
+  scheduled maintenance.
+- **The server trusts the repository, not the client.** When an agent
+  records a run, the server reads every snapshot back from the repository
+  and refuses ones that aren't that client's; sizes and paths shown in the
+  GUI come from the repository.
 - The **kopia binary** for each client is built into the server image
-  (linux, windows, macOS × amd64/arm64) and fetched by the agent from the
-  server over its pinned connection, verified by SHA-256 — still one
-  installer per client. Windows 7 / 32-bit clients have no Kopia build and
-  keep the built-in engine.
+  (Linux x64/ARM64, Windows x64) and fetched by the agent from the server
+  over its pinned connection, verified by SHA-256 — still one installer per
+  client. 32-bit Windows clients (including Windows 7) have no Kopia build
+  and keep the built-in engine.
 - Snapshots are tagged with agent, job and run IDs, so they can be traced
   from the repository alone.
 
@@ -72,16 +83,44 @@ Other settings: `CB_KOPIA_LISTEN` (default `:51515`), `CB_KOPIA_REPO`
 > **The repository password cannot be recovered.** Lose `CB_KOPIA_PASSWORD`
 > and every Kopia backup is unreadable. Keep it in Vaultwarden.
 
+## Off-site copy (3-2-1)
+
+Set `CB_KOPIA_SYNC_TO` and the server mirrors the repository there with
+`kopia repository sync-to … --delete` every `CB_KOPIA_SYNC_INTERVAL`
+(default `6h`; first copy a few minutes after start). The copy is the same
+encrypted repository — the storage provider never sees plaintext — and
+*Settings → Off-site copy* shows the last result.
+
+Any S3-compatible store (Backblaze B2, Cloudflare R2, Wasabi, AWS):
+
+```bash
+CB_KOPIA_SYNC_TO="s3 --bucket=my-backups --endpoint=s3.eu-central-003.backblazeb2.com --prefix=unseen/"
+AWS_ACCESS_KEY_ID=…          # Vaultwarden; never put keys in CB_KOPIA_SYNC_TO
+AWS_SECRET_ACCESS_KEY=…
+```
+
+Other `sync-to` targets (`filesystem --path=/mnt/nas/kopia`, `sftp …`,
+`b2 …`, `azure …`, `gcs …`) work the same way; keep secrets in the
+environment variables Kopia reads for them.
+
+**Disaster recovery**: on any machine with Kopia, `kopia repository connect
+s3 --bucket=… --endpoint=… --prefix=…` with `CB_KOPIA_PASSWORD`, then
+`kopia snapshot list --all` and `kopia snapshot restore`. Snapshots carry
+`agent:`, `job:` and `run:` tags to tell clients apart.
+
 ## Notes and limits
 
-- **Repository on local disk only (for now).** The repository lives in the
-  server's data volume. Off-site copies (`kopia repository sync-to` to
-  B2/R2/S3) and S3-backed repositories are not wired into the GUI yet.
+- **The primary repository is on the server's disk.** The off-site copy
+  above covers losing the server. An S3-backed *primary* repository isn't
+  wired up.
 - **Existing clients need the new agent.** Agents don't self-update; a client
   gets Kopia (and the MeshAgent bootstrapper) after reinstalling the
   agent from the enroll dialog.
-- **Browsing a big snapshot** walks it with `kopia show` once and caches the
-  listing (last 8 snapshots); the first open of a very large snapshot is slow.
+- **Browsing or zip-downloading a very large snapshot can time out.** The
+  server lists a Kopia snapshot by walking it with one `kopia show` per
+  directory (cached for the last 8 snapshots) under a 10-minute limit; a
+  tree with tens of thousands of folders may not finish. Restore to the
+  client is unaffected (Kopia restores directly).
 - *Full every Nth run* doesn't apply: every Kopia snapshot is incremental
   and logically complete.
 - Run statistics show files and size; Kopia doesn't report uploaded bytes per
@@ -96,5 +135,6 @@ Other settings: `CB_KOPIA_LISTEN` (default `:51515`), `CB_KOPIA_REPO`
 split-listener mode) runs a real server, agent and Kopia: provisioning, a
 backup with excludes applied as policy, browse, single-file and zip download,
 full and selected-folder restore, the client being denied deletion of its own
-snapshot, and deletion from the GUI. Windows (VSS, paths) is covered by build
+snapshot, the off-site copy (to a filesystem target) opening as a complete
+repository with the snapshot, and deletion from the GUI. Windows (VSS, paths) is covered by build
 and code review only.
