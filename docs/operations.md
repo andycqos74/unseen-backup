@@ -163,3 +163,30 @@ native agent instead.
   uploaded data is reused thanks to content addressing.
 - **Partial runs**: some files were skipped (locked/permission denied);
   the run log lists every one.
+
+## Agent self-update
+
+Agents keep themselves current with the server. On every connect an agent
+reports the SHA-256 of its executable (ignoring the enrollment data appended
+to installer copies). When the server ships a different build for that
+platform — after you deploy a new server image — it offers the update, and
+the agent:
+
+1. waits until no backup or restore is running (and starts none meanwhile),
+2. downloads the build from the server over its pinned connection and checks
+   the hash,
+3. swaps its executable (on Windows the running one is renamed to
+   `*.old` and removed on the next start), and
+4. exits so the service manager starts the new version — systemd
+   (`Restart=always`), launchd (`KeepAlive`) or the Windows service's
+   recovery actions (restart after 10 s).
+
+The Windows 7 / POSReady build updates to the newer Windows 7 build, never to
+the standard one. Containerized agents don't self-update (pull the new image
+instead).
+
+Turn it off fleet-wide with `CB_AGENT_AUTOUPDATE=false` on the server, or on
+one machine with `CB_NO_AUTO_UPDATE=1` in the agent's environment.
+
+Agents older than this feature don't report a hash, so they need one manual
+reinstall from the enroll dialog; from then on they update themselves.

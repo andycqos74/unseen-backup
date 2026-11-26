@@ -120,6 +120,8 @@ type Server struct {
 	// not configured.
 	kopia *kopiaEngine
 
+	autoUpdate bool // offer agents self-updates (CB_AGENT_AUTOUPDATE)
+
 	mesh            *meshcentral.Client
 	meshGroupName   string
 	meshAutoInstall bool
@@ -184,6 +186,7 @@ func New(cfg Config) (*Server, error) {
 		mesh:            cfg.Mesh,
 		meshGroupName:   cfg.MeshGroup,
 		meshAutoInstall: cfg.MeshAutoInstall,
+		autoUpdate:      autoUpdateEnabled(),
 	}
 	if err := s.initStorage(); err != nil {
 		return nil, fmt.Errorf("open storage: %w", err)
@@ -235,6 +238,7 @@ func (s *Server) registerAgentRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/agent/meshagent", s.agentAuth(s.handleAgentMeshInstaller))
 	mux.HandleFunc("POST /api/agent/kopia/snapshots", s.agentAuth(s.handleKopiaCommit))
 	mux.HandleFunc("GET /api/agent/kopia/binary", s.agentAuth(s.handleKopiaBinary))
+	mux.HandleFunc("GET /api/agent/update", s.agentAuth(s.handleAgentUpdateDownload))
 
 	// Prebuilt agent binaries for the install scripts (not secret).
 	mux.Handle("GET /dl/", http.StripPrefix("/dl/", http.FileServer(http.Dir(s.cfg.AgentBins))))

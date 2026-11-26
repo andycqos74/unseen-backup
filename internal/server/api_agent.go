@@ -124,6 +124,7 @@ func (s *Server) handleAgentMessage(agentID string, env proto.Envelope) error {
 			return err
 		}
 		s.pushJobs(agentID)
+		go s.offerAgentUpdate(agentID, hello)
 		if s.kopia != nil && hasCap(hello.Caps, proto.CapKopia) {
 			go s.sendKopiaConfig(agentID)
 		}
