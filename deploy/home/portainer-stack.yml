@@ -1,0 +1,56 @@
+# Unseen Backup: home server stack for Portainer (prebuilt images, no clone,
+# no build). Server + Cloudflare Tunnel (admin GUI) + Cloudflare DDNS (agent
+# hostname). Walkthrough: docs/home-server-windows11.md.
+#
+# Portainer → Stacks → Add stack → Web editor: paste this file, then under
+# "Environment variables" use "Load variables from .env file" with
+# deploy/home/stack.env.example filled in (or add the variables by hand).
+#
+# Before deploying:
+#   - create the data folder on the host (e.g. sudo mkdir -p /srv/unseen-backup/data)
+#   - the images are private while the repo is: add ghcr.io under
+#     Portainer → Registries (GitHub username + a token with read:packages)
+#
+# Ports: 8443 (agents) and 51515 (Kopia) are forwarded on the router.
+# 8444 (admin GUI) stays on 127.0.0.1; cloudflared reaches it over the stack
+# network as https://backup-server:8444.
+
+services:
+  backup-server:
+    image: ghcr.io/andycqos74/unseen-backup-server:${CB_TAG:-main}
+    container_name: backup-server
+    restart: unless-stopped
+    ports:
+      - "8443:8443"              # agents
+      - "51515:51515"            # Kopia repository server (agents)
+      - "127.0.0.1:8444:8444"    # admin GUI: local only, reached via the tunnel
+    environment:
+      CB_SERVER_NAME: ${CB_SERVER_NAME}
+      CB_PUBLIC_URL: ${CB_PUBLIC_URL}
+      CB_ADMIN_LISTEN: ${CB_ADMIN_LISTEN:-:8444}
+      CB_ADMIN_URL: ${CB_ADMIN_URL}
+      CB_KOPIA_PASSWORD: ${CB_KOPIA_PASSWORD}
+      TZ: ${TZ:-Europe/London}
+    volumes:
+      # Absolute host path: a Portainer stack has no folder of its own, so a
+      # relative ./data would not land where you expect. Holds the database,
+      # TLS cert (agents pin it), Kopia repository and rclone config.
+      - ${CB_DATA_DIR:-/srv/unseen-backup/data}:/data
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN}
+    depends_on: [backup-server]
+
+  ddns:
+    image: favonia/cloudflare-ddns:latest
+    container_name: cloudflare-ddns
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
+      DOMAINS: ${CB_AGENT_HOST}
+      PROXIED: "false"           # MUST stay grey-cloud: agents pin the server's own cert
+      IP6_PROVIDER: none
