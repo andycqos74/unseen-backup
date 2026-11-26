@@ -20,23 +20,32 @@ import (
 	"sync"
 	"time"
 
+	"centralbackup/internal/meshcentral"
 	"centralbackup/internal/server/storage"
 	"centralbackup/internal/server/store"
 )
 
 type Config struct {
-	Listen     string // e.g. ":8443" — agents (and, unless AdminListen is set, everything)
+	Listen string // e.g. ":8443" — agents (and, unless AdminListen is set, everything)
 	// AdminListen, when set, moves the GUI and admin API to their own
 	// listener (e.g. "127.0.0.1:8444" or ":8444" on an internal network).
 	AdminListen string
-	DataDir    string // sqlite db, tls certs
-	StorageDir string // blob/manifest storage root (localfs backend)
-	ServerName string // comma-separated extra SANs for the generated cert
-	PublicURL  string // origin agents connect to, e.g. https://backup.example.com:8443
-	AdminURL   string // origin browsers use for the GUI (split mode), e.g. https://backup-admin.example.com
-	CertFile   string // optional externally provided cert
-	KeyFile    string
-	AgentBins  string // directory of prebuilt agent binaries served at /dl/
+	DataDir     string // sqlite db, tls certs
+	StorageDir  string // blob/manifest storage root (localfs backend)
+	ServerName  string // comma-separated extra SANs for the generated cert
+	PublicURL   string // origin agents connect to, e.g. https://backup.example.com:8443
+	AdminURL    string // origin browsers use for the GUI (split mode), e.g. https://backup-admin.example.com
+	CertFile    string // optional externally provided cert
+	KeyFile     string
+	AgentBins   string // directory of prebuilt agent binaries served at /dl/
+
+	// Mesh is the MeshCentral integration (remote desktop/terminal/files);
+	// nil when CB_MESH_URL is unset. MeshGroup names the device group new
+	// clients join. MeshErr records an invalid MeshCentral configuration,
+	// reported by New so a typo fails at startup.
+	Mesh      *meshcentral.Client
+	MeshGroup string
+	MeshErr   error
 }
 
 func ConfigFromEnv() Config {
@@ -47,17 +56,21 @@ func ConfigFromEnv() Config {
 		return def
 	}
 	dataDir := get("CB_DATA_DIR", "./data")
+	mesh, meshGroup, meshErr := meshConfigFromEnv()
 	return Config{
+		Mesh:        mesh,
+		MeshGroup:   meshGroup,
+		MeshErr:     meshErr,
 		Listen:      get("CB_LISTEN", ":8443"),
 		AdminListen: get("CB_ADMIN_LISTEN", ""),
 		AdminURL:    get("CB_ADMIN_URL", ""),
-		DataDir:    dataDir,
-		StorageDir: get("CB_STORAGE_DIR", filepath.Join(dataDir, "storage")),
-		ServerName: get("CB_SERVER_NAME", ""),
-		PublicURL:  get("CB_PUBLIC_URL", ""),
-		CertFile:   get("CB_TLS_CERT", ""),
-		KeyFile:    get("CB_TLS_KEY", ""),
-		AgentBins:  get("CB_AGENT_BIN_DIR", "./agents"),
+		DataDir:     dataDir,
+		StorageDir:  get("CB_STORAGE_DIR", filepath.Join(dataDir, "storage")),
+		ServerName:  get("CB_SERVER_NAME", ""),
+		PublicURL:   get("CB_PUBLIC_URL", ""),
+		CertFile:    get("CB_TLS_CERT", ""),
+		KeyFile:     get("CB_TLS_KEY", ""),
+		AgentBins:   get("CB_AGENT_BIN_DIR", "./agents"),
 	}
 }
 
@@ -94,6 +107,10 @@ type Server struct {
 	browse browseRequests
 
 	web *webUI
+
+	// mesh is the MeshCentral integration, nil when not configured.
+	mesh          *meshcentral.Client
+	meshGroupName string
 }
 
 // backend returns the currently active storage backend.
@@ -116,6 +133,9 @@ func New(cfg Config) (*Server, error) {
 		return nil, err
 	}
 	cfg.AdminURL = adminURL
+	if cfg.MeshErr != nil {
+		return nil, cfg.MeshErr
+	}
 	if err := validateListeners(cfg); err != nil {
 		return nil, err
 	}
@@ -148,6 +168,9 @@ func New(cfg Config) (*Server, error) {
 		hub:         newHub(),
 		fingerprint: fp,
 		tlsCert:     cert,
+
+		mesh:          cfg.Mesh,
+		meshGroupName: cfg.MeshGroup,
 	}
 	if err := s.initStorage(); err != nil {
 		return nil, fmt.Errorf("open storage: %w", err)
@@ -205,6 +228,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 	// Admin API (session cookie).
 	s.registerAdminAPI(mux)
 	s.registerStorageAPI(mux)
+	s.registerRemoteAPI(mux)
 
 	// Web GUI.
 	s.web.register(mux)
@@ -235,6 +259,13 @@ func (s *Server) Run() error {
 	go s.runMaintenance()
 
 	log.Printf("TLS certificate SHA-256 fingerprint: %s", s.fingerprint)
+	if s.mesh != nil {
+		log.Printf("MeshCentral remote access enabled: %s (acting as %q)", s.mesh.WebURL, s.mesh.User)
+		if s.mesh.APIFingerprint == "" {
+			log.Printf("note: CB_MESH_API_FINGERPRINT is not set; MeshCentral's API certificate is not verified " +
+				"(acceptable only when CB_MESH_API_URL is on a private Docker network)")
+		}
+	}
 
 	if !s.cfg.splitMode() {
 		log.Printf("central backup server listening on https://%s (GUI, admin API and agents)", s.cfg.Listen)

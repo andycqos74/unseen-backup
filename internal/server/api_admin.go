@@ -235,6 +235,7 @@ func (s *Server) handleAgentDelete(w http.ResponseWriter, r *http.Request) {
 			s.backend().Delete(k)
 		}
 	}
+	s.store.SetSetting(meshNodeKey(id), "") // forget its MeshCentral link
 	if err := s.store.DeleteAgent(id); err != nil {
 		httpError(w, http.StatusInternalServerError, "database error")
 		return

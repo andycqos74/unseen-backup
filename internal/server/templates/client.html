@@ -8,6 +8,22 @@
 </div>
 <p class="muted" id="agent-meta"></p>
 
+<div id="remote" hidden>
+  <div class="page-head">
+    <h2>Remote access</h2>
+    <span id="remote-btns" hidden>
+      <a class="btn primary" id="rm-desktop" target="_blank" rel="noopener noreferrer">🖥 Desktop</a>
+      <a class="btn" id="rm-terminal" target="_blank" rel="noopener noreferrer">⌨ Terminal</a>
+      <a class="btn" id="rm-files" target="_blank" rel="noopener noreferrer">📁 Files</a>
+    </span>
+  </div>
+  <p class="muted" id="remote-status"></p>
+  <div id="remote-pick" hidden style="margin:.4rem 0 1rem">
+    <select id="remote-node"></select>
+    <button class="btn" onclick="linkRemote()">Link</button>
+  </div>
+</div>
+
 <div class="page-head">
   <h2>Backup jobs</h2>
   <a class="btn primary" id="new-job-link" href="#">＋ New job</a>
@@ -164,6 +180,46 @@
 const agentID = document.body.dataset.id;
 el('new-job-link').href = '/jobs/new?agent=' + agentID;
 let jobNames = {};
+
+// Remote access (MeshCentral). Loaded once, not on the 5 s refresh: each
+// call queries MeshCentral's API.
+async function loadRemote() {
+  const r = await api('GET', `/api/admin/agents/${agentID}/remote`);
+  if (!r.enabled) return;
+  el('remote').hidden = false;
+  const st = el('remote-status');
+  el('remote-btns').hidden = !r.linked;
+  el('remote-pick').hidden = true;
+  if (r.error) { st.textContent = 'MeshCentral unavailable: ' + r.error; return; }
+  if (r.linked) {
+    for (const v of ['desktop', 'terminal', 'files'])
+      el('rm-' + v).href = `/api/admin/agents/${agentID}/remote/open?view=${v}`;
+    st.innerHTML = `${statusDot(r.linked.online ? 'online' : 'offline')} MeshCentral device
+      <b>${esc(r.linked.name)}</b>${r.linked.computer && r.linked.computer !== r.linked.name ? ` (${esc(r.linked.computer)})` : ''}
+      — ${r.linked.online ? 'MeshAgent connected' : 'MeshAgent offline'}${r.auto ? ' · linked automatically by hostname' : ''}
+      · <a href="#" onclick="unlinkRemote();return false">change</a>`;
+    return;
+  }
+  const c = r.candidates || [];
+  st.textContent = (r.stale ? 'The linked MeshCentral device no longer exists. ' : '') +
+    (c.length === 0 ? 'No MeshCentral devices yet — install MeshAgent on this client (Clients → Enroll new client shows how).'
+      : r.matched ? 'Several MeshCentral devices match this hostname — pick one:'
+      : 'No MeshCentral device matches this hostname — pick one, or install MeshAgent on this client:');
+  if (c.length) {
+    el('remote-node').innerHTML = c.map(n =>
+      `<option value="${esc(n.id)}">${esc(n.name)}${n.computer && n.computer !== n.name ? ' (' + esc(n.computer) + ')' : ''}${n.online ? '' : ' — offline'}</option>`).join('');
+    el('remote-pick').hidden = false;
+  }
+}
+async function linkRemote() {
+  await api('POST', `/api/admin/agents/${agentID}/remote/link`, {node_id: el('remote-node').value});
+  loadRemote();
+}
+async function unlinkRemote() {
+  if (!confirm('Unlink this client from its MeshCentral device?')) return;
+  await api('POST', `/api/admin/agents/${agentID}/remote/link`, {node_id: ''});
+  loadRemote();
+}
 
 async function load() {
   const agents = await api('GET', '/api/admin/agents');
@@ -611,6 +667,7 @@ async function saveSched() {
   } catch (err) { toast(err.message); }
 }
 
+loadRemote();
 load();
 setInterval(load, 5000);
 </script>
