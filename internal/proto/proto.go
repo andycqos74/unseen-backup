@@ -48,6 +48,7 @@ const (
 	// server -> agent
 	MsgJobsUpdate     = "jobs_update"
 	MsgRunBackup      = "run_backup"
+	MsgKopiaConfig    = "kopia_config"
 	MsgRestore        = "restore"
 	MsgCancelRun      = "cancel_run"
 	MsgDiscoverDocker = "discover_docker"
@@ -145,8 +146,13 @@ type Job struct {
 	PostHook  string   `json:"post_hook,omitempty" yaml:"post_hook,omitempty"`
 	Enabled   bool     `json:"enabled" yaml:"enabled"`
 	Catchup   bool     `json:"catchup,omitempty" yaml:"catchup,omitempty"` // run missed schedule when agent reconnects
-	Origin    string   `json:"origin" yaml:"-"`
-	Version   int64    `json:"version" yaml:"-"`
+	// Engine selects the backup engine: "" (the built-in engine) or
+	// EngineKopia. Kopia jobs snapshot through the server's Kopia repository
+	// server; their retention and excludes become Kopia policies set by the
+	// server.
+	Engine  string `json:"engine,omitempty" yaml:"engine,omitempty"`
+	Origin  string `json:"origin" yaml:"-"`
+	Version int64  `json:"version" yaml:"-"`
 }
 
 // Hello is sent by the agent right after the socket is established.
@@ -155,6 +161,45 @@ type Hello struct {
 	OS       string `json:"os"`
 	Arch     string `json:"arch"`
 	Version  string `json:"version"`
+	// Caps lists optional abilities, e.g. CapKopia when Kopia runs on this
+	// platform. Older agents send none.
+	Caps []string `json:"caps,omitempty"`
+}
+
+// Engines and capabilities.
+const (
+	EngineKopia = "kopia"
+	CapKopia    = "kopia"
+)
+
+// KopiaConfig gives an agent its Kopia repository-server connection. It is
+// sent over the authenticated control channel, never baked into installers.
+// The agent is a Kopia user of its own (append-only: it can add snapshots
+// but not delete them or change policies).
+type KopiaConfig struct {
+	URL         string `json:"url"`         // https://host:port of the Kopia repository server
+	Fingerprint string `json:"fingerprint"` // SHA-256 of its certificate (hex)
+	Username    string `json:"username"`
+	Hostname    string `json:"hostname"`
+	Password    string `json:"password"`
+}
+
+// KopiaSnapshot is one Kopia snapshot (one source path) of a run.
+type KopiaSnapshot struct {
+	ID        string `json:"id"`
+	Path      string `json:"path"` // source path as the client sees it
+	Root      string `json:"root"` // root directory object
+	Files     int64  `json:"files"`
+	Bytes     int64  `json:"bytes"`
+	NumFailed int64  `json:"num_failed"`
+}
+
+// KopiaCommit records a Kopia run's snapshots on the server
+// (POST /api/agent/kopia/snapshots).
+type KopiaCommit struct {
+	RunID     string          `json:"run_id"`
+	JobID     string          `json:"job_id"`
+	Snapshots []KopiaSnapshot `json:"snapshots"`
 }
 
 // JobsSync carries client-side job creations/edits up to the server.
@@ -189,6 +234,9 @@ type Restore struct {
 	Paths      []string `json:"paths,omitempty"`      // path prefixes to restore; empty = everything
 	TargetDir  string   `json:"target_dir,omitempty"` // empty = original locations
 	Overwrite  bool     `json:"overwrite"`
+	// Kopia is set for snapshots made by the Kopia engine: the Kopia
+	// snapshots (one per source path) to restore from.
+	Kopia []KopiaSnapshot `json:"kopia,omitempty"`
 }
 
 // CancelRun asks the agent to stop an in-progress run (backup or restore).

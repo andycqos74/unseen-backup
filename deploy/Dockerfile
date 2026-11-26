@@ -23,6 +23,25 @@ RUN set -e; \
 # environments. Regenerate and re-commit it when the agent code changes.
 COPY deploy/prebuilt/backup-agent-windows-386-legacy.exe /out/agents/backup-agent-windows-386-legacy.exe
 
+# ---- Kopia (backup engine) ----
+# Built from source through the Go module proxy, so every dependency is
+# verified against Go's checksum database. The server uses the native binary;
+# agents download theirs from the server (/api/agent/kopia/binary), which
+# checks the SHA-256. Set KOPIA_VERSION= (empty) to skip it entirely.
+FROM golang:1.25-alpine AS kopia
+ARG KOPIA_VERSION=v0.23.1
+RUN set -e; mkdir -p /out/agents /out/bin; \
+    if [ -n "$KOPIA_VERSION" ]; then \
+      CGO_ENABLED=0 GOBIN=/out/bin go install github.com/kopia/kopia@${KOPIA_VERSION}; \
+      for t in linux/amd64 linux/arm64 windows/amd64 windows/arm64 darwin/amd64 darwin/arm64; do \
+        os=${t%/*}; arch=${t#*/}; ext=""; [ "$os" = windows ] && ext=".exe"; \
+        CGO_ENABLED=0 GOOS=$os GOARCH=$arch go install github.com/kopia/kopia@${KOPIA_VERSION}; \
+        src="$(go env GOPATH)/bin/${os}_${arch}/kopia$ext"; \
+        [ -f "$src" ] || src="$(go env GOPATH)/bin/kopia$ext"; \
+        cp "$src" "/out/agents/kopia-$os-$arch$ext"; \
+      done; \
+    fi
+
 # ---- central server image ----
 FROM alpine:3.21 AS server
 RUN apk add --no-cache ca-certificates tzdata
@@ -30,13 +49,16 @@ WORKDIR /app
 COPY --from=build /out/backup-server /app/backup-server
 # Prebuilt agent binaries, served at /dl/ for the client install scripts.
 COPY --from=build /out/agents /app/agents
+COPY --from=kopia /out/agents/ /app/agents/
+COPY --from=kopia /out/bin/ /usr/local/bin/
 ENV CB_DATA_DIR=/data \
     CB_LISTEN=:8443 \
     CB_AGENT_BIN_DIR=/app/agents
 VOLUME /data
 # 8443: agents (and the GUI unless CB_ADMIN_LISTEN is set); 8444: the
-# optional separate admin listener.
-EXPOSE 8443 8444
+# optional separate admin listener; 51515: the Kopia repository server
+# (only when CB_KOPIA_PASSWORD is set).
+EXPOSE 8443 8444 51515
 ENTRYPOINT ["/app/backup-server"]
 
 # ---- containerized agent image (for Docker hosts) ----

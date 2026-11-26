@@ -54,6 +54,9 @@ func (a *Agent) doRestore(ctx context.Context, cmd proto.Restore) (proto.RunStat
 		where = cmd.TargetDir
 	}
 	a.runLog(cmd.RunID, "info", fmt.Sprintf("restoring snapshot %s to %s", cmd.SnapshotID, where))
+	if len(cmd.Kopia) > 0 {
+		return a.doKopiaRestore(ctx, cmd)
+	}
 
 	rc, err := a.client.getManifest(ctx, cmd.SnapshotID)
 	if err != nil {

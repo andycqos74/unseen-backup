@@ -66,6 +66,9 @@ func (s *Server) deleteSnapshot(id string) error {
 	if err != nil {
 		return err
 	}
+	if sn.Backend == kopiaBackend {
+		return s.deleteKopiaSnapshot(sn)
+	}
 	if err := s.backend().Delete(sn.ManifestKey); err != nil {
 		return err
 	}

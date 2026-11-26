@@ -85,6 +85,10 @@ func (a *Agent) doBackup(ctx context.Context, cmd proto.RunBackup) (proto.RunSta
 		}()
 	}
 
+	if job.Engine == proto.EngineKopia {
+		return a.doKopiaBackup(ctx, cmd)
+	}
+
 	// Previous manifest gives the size+mtime shortcut for incrementals.
 	var prev map[string]proto.ManifestEntry
 	if cmd.Mode == proto.ModeIncremental {

@@ -1,8 +1,10 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"centralbackup/internal/proto"
 	"centralbackup/internal/server/store"
@@ -90,6 +92,9 @@ func validateJob(j *proto.Job) error {
 	if j.Name == "" {
 		return fmt.Errorf("job name is required")
 	}
+	if j.Engine != "" && j.Engine != proto.EngineKopia {
+		return fmt.Errorf("unknown engine %q", j.Engine)
+	}
 	if len(j.Paths) == 0 {
 		return fmt.Errorf("at least one path is required")
 	}
@@ -157,6 +162,19 @@ func (s *Server) startBackup(row *store.JobRow, mode string, queue bool) (runID 
 }
 
 func (s *Server) sendRunBackup(runID string, job proto.Job, mode string) {
+	if job.Engine == proto.EngineKopia {
+		if s.kopia == nil {
+			s.store.FinishRun(runID, proto.RunError, "", "this job uses the Kopia engine, which is not enabled on the server (CB_KOPIA_PASSWORD)", proto.RunStats{})
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		err := s.applyKopiaPolicy(ctx, job)
+		cancel()
+		if err != nil {
+			s.store.FinishRun(runID, proto.RunError, "", "could not set Kopia policy: "+err.Error(), proto.RunStats{})
+			return
+		}
+	}
 	prevID := ""
 	if prev, err := s.store.LatestSnapshot(s.backendKey(), job.ID); err == nil {
 		prevID = prev.ID
@@ -178,9 +196,16 @@ func (s *Server) startRestore(sn *store.Snapshot, paths []string, targetDir stri
 	if err != nil {
 		return "", err
 	}
-	ok := s.hub.Send(sn.AgentID, proto.MsgRestore, proto.Restore{
+	msg := proto.Restore{
 		RunID: runID, SnapshotID: sn.ID, Paths: paths, TargetDir: targetDir, Overwrite: overwrite,
-	})
+	}
+	if sn.Backend == kopiaBackend {
+		if msg.Kopia, err = decodeKopiaKey(sn.ManifestKey); err != nil {
+			s.store.FinishRun(runID, proto.RunError, "", "bad Kopia snapshot record", proto.RunStats{})
+			return "", err
+		}
+	}
+	ok := s.hub.Send(sn.AgentID, proto.MsgRestore, msg)
 	if !ok {
 		s.store.FinishRun(runID, proto.RunError, "", "failed to dispatch to agent", proto.RunStats{})
 		return "", fmt.Errorf("failed to dispatch to agent")

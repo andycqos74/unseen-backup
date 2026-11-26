@@ -124,6 +124,9 @@ func (s *Server) handleAgentMessage(agentID string, env proto.Envelope) error {
 			return err
 		}
 		s.pushJobs(agentID)
+		if s.kopia != nil && hasCap(hello.Caps, proto.CapKopia) {
+			go s.sendKopiaConfig(agentID)
+		}
 		go s.dispatchPendingWork(agentID)
 		return nil
 
@@ -427,4 +430,13 @@ func parseInt64(s string) int64 {
 		n = n*10 + int64(c-'0')
 	}
 	return n
+}
+
+func hasCap(caps []string, c string) bool {
+	for _, x := range caps {
+		if x == c {
+			return true
+		}
+	}
+	return false
 }
