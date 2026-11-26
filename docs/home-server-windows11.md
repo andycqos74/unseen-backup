@@ -58,23 +58,27 @@ through the tunnel**. The tunnel is only for you in a browser. With
 
 ## Step 2. Prepare the home server
 
-An always-on Linux box with Docker (Ubuntu Server assumed). Building the
-image compiles the server, four agents **and Kopia for three platforms**. Give
-it at least **4 GB RAM** and 10–20 minutes for the first build.
+An always-on Linux box with Docker and Portainer (Ubuntu Server assumed).
+Nothing is cloned or built on it: GitHub Actions builds the images on every
+push to `main` and publishes them to GHCR as
+`ghcr.io/andycqos74/unseen-backup-server:main` (also `:latest` and a
+`sha-<7 chars>` tag per build).
 
-```bash
-curl -fsSL https://get.docker.com | sudo sh
-sudo usermod -aG docker $USER          # log out and back in
+1. **Data folder.** Create it on the big disk:
 
-sudo mkdir -p /srv/unseen-backup/data   # put this on the big disk
-sudo chown -R $USER /srv/unseen-backup
-cd /srv/unseen-backup
-git clone https://github.com/andycqos74/unseen-backup.git
-```
+   ```bash
+   sudo mkdir -p /srv/unseen-backup/data
+   ```
 
-The repo is private: use your GitHub username and a personal access token as
-the password. Also set a **DHCP reservation** in your router so the server keeps
-`192.168.1.50`.
+2. **Registry login.** The repo is private, so its images are too. On GitHub
+   create a **classic personal access token** with only the
+   `read:packages` scope. In Portainer → **Registries → Add registry →
+   Custom registry**: URL `ghcr.io`, your GitHub username, the token as the
+   password. (Alternatively make the `unseen-backup-server` package public in
+   GitHub → Packages → Package settings, and skip this.)
+
+3. Set a **DHCP reservation** in your router so the server keeps
+   `192.168.1.50`.
 
 ---
 
@@ -95,7 +99,7 @@ the password. Also set a **DHCP reservation** in your router so the server keeps
 
 ---
 
-## Step 4. Secrets and the compose stack
+## Step 4. Secrets and the Portainer stack
 
 Generate the Kopia repository password and **save it in Vaultwarden now**.
 If you lose it, every Kopia backup is unreadable, including the OneDrive copy.
@@ -104,86 +108,38 @@ If you lose it, every Kopia backup is unreadable, including the OneDrive copy.
 openssl rand -hex 32
 ```
 
-`/srv/unseen-backup/.env` (then `chmod 600 .env`):
+1. Copy [`deploy/home/stack.env.example`](../deploy/home/stack.env.example)
+   to your PC and fill it in: your hostnames, LAN IP, the Kopia password and
+   the two Cloudflare tokens from Step 3. Don't commit the filled-in copy.
+2. Portainer → **Stacks → Add stack**, name `unseen-backup`, **Web editor**:
+   paste [`deploy/home/portainer-stack.yml`](../deploy/home/portainer-stack.yml)
+   unchanged.
+3. **Environment variables → Load variables from .env file** → pick your
+   filled-in file. Check every value arrived.
+4. **Deploy the stack.**
 
-```dotenv
-# Agent-facing address: baked into every installer, so set it before enrolling
-CB_SERVER_NAME=agents.example.com,192.168.1.50
-CB_PUBLIC_URL=https://agents.example.com:8443
+The stack is the server from `deploy/docker-compose.yml` using the prebuilt
+image, with a bind mount to `/srv/unseen-backup/data` (override with
+`CB_DATA_DIR`), MeshCentral left out (optional, see
+[remote-access.md](remote-access.md)), and the tunnel and DDNS containers
+added. `ghcr.io/andycqos74/...` is hard-coded; if you fork the repo, change
+the owner in the `image:` line.
 
-# Split admin GUI off the public port
-CB_ADMIN_LISTEN=:8444
-CB_ADMIN_URL=https://backup-admin.example.com
+**Check** in Portainer → Containers → *container* → **Logs**:
+- `backup-server`: the certificate fingerprint, and
+  `kopia: repository … repository server on :51515`;
+- `cloudflared`: `Registered tunnel connection`;
+- `cloudflare-ddns`: the A record it set for `agents.example.com`.
 
-# Kopia engine (unset = off)
-CB_KOPIA_PASSWORD=<the hex string from above>
+Or from a shell on the server:
+`docker logs backup-server 2>&1 | grep -iE "fingerprint|kopia:|listen"`.
 
-# Cloudflare
-TUNNEL_TOKEN=eyJhIjoi...
-CLOUDFLARE_API_TOKEN=...
-```
-
-`/srv/unseen-backup/compose.yml`:
-
-```yaml
-services:
-  backup-server:
-    build:
-      context: ./unseen-backup
-      dockerfile: deploy/Dockerfile
-      target: server
-    image: unseen-backup/server
-    container_name: backup-server
-    restart: unless-stopped
-    ports:
-      - "8443:8443"              # agents
-      - "51515:51515"            # Kopia repository server (agents)
-      - "127.0.0.1:8444:8444"    # admin GUI: local only, the tunnel reaches it over the Docker network
-    environment:
-      CB_SERVER_NAME: ${CB_SERVER_NAME}
-      CB_PUBLIC_URL: ${CB_PUBLIC_URL}
-      CB_ADMIN_LISTEN: ${CB_ADMIN_LISTEN}
-      CB_ADMIN_URL: ${CB_ADMIN_URL}
-      CB_KOPIA_PASSWORD: ${CB_KOPIA_PASSWORD}
-      TZ: Europe/London
-    volumes:
-      - ./data:/data             # database, TLS cert, Kopia repository, rclone config
-
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    container_name: cloudflared
-    restart: unless-stopped
-    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN}
-    depends_on: [backup-server]
-
-  ddns:
-    image: favonia/cloudflare-ddns:latest
-    container_name: cloudflare-ddns
-    restart: unless-stopped
-    network_mode: host
-    environment:
-      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
-      DOMAINS: agents.example.com
-      PROXIED: "false"           # MUST stay grey-cloud: agents pin the server's own cert
-      IP6_PROVIDER: none
-```
-
-This is the repo's `deploy/docker-compose.yml`, with these changes:
-- a bind mount to `./data` instead of a named volume;
-- MeshCentral left out (it's optional and you didn't ask for it). It can be
-  added later with `--profile remote` and the `CB_MESH_*` variables;
-- the tunnel and DDNS containers added.
-
-Start and check:
-
-```bash
-cd /srv/unseen-backup
-docker compose up -d --build
-docker compose logs backup-server | grep -iE "fingerprint|kopia:|listen"
-#   expect the cert fingerprint, and "kopia: repository … repository server on :51515"
-docker compose logs cloudflared | tail      # "Registered tunnel connection"
-docker compose logs ddns | tail             # shows the A record it set
-```
+> **Building from source instead** (no GHCR access, or testing a branch):
+> clone the repo, copy `deploy/home/portainer-stack.yml` and replace its
+> `image:` line with `build: {context: <path to clone>, dockerfile: deploy/Dockerfile, target: server}`,
+> then `docker compose --env-file stack.env -f portainer-stack.yml up -d --build`.
+> The build compiles the server, four agents and Kopia for three platforms:
+> allow 4 GB RAM and 10–20 minutes.
 
 ---
 
@@ -326,13 +282,11 @@ on reconnect. The admin tunnel is unaffected.
 
 ## Updating later
 
-```bash
-cd /srv/unseen-backup/unseen-backup && git pull
-cd .. && docker compose up -d --build
-```
+Portainer → **Stacks → unseen-backup → Editor → Update the stack** with
+**Re-pull image and redeploy** switched on. Your data folder and certificate
+are untouched. Agents update themselves to the new build.
 
-Agents update themselves to the new build. When the PRs are merged, switch
-the clone to `main` (`git checkout main && git pull`) and rebuild.
+To pin or roll back, set `CB_TAG` to a build's `sha-<first 7 chars of the commit>` tag instead of `main`.
 
 ---
 
@@ -341,8 +295,9 @@ the clone to `main` (`git checkout main && git pull`) and rebuild.
 | Symptom | Fix |
 |---|---|
 | `server certificate fingerprint mismatch` on the agent | `agents.example.com` is orange-clouded. Set it to **DNS only**. |
+| Stack deploy fails: `unauthorized` / `denied` pulling `ghcr.io/...` | Registry login missing or token lacks `read:packages`. See Step 2. |
 | Tunnel 502 | Service must be **HTTPS → `backup-server:8444`** with No TLS Verify. Check `CB_ADMIN_LISTEN=:8444` is set. |
-| GUI loads on `:8443` | `CB_ADMIN_LISTEN` isn't set, so the login page is public. Fix `.env` and run `docker compose up -d`. |
+| GUI loads on `:8443` | `CB_ADMIN_LISTEN` isn't set, so the login page is public. Set it in the stack's environment variables and **Update the stack**. |
 | Kopia job fails to connect | Port **51515** isn't forwarded, or the hosts entry is missing on a home PC. |
 | Server won't start, Kopia error | Check `CB_KOPIA_PASSWORD`. Changing it after the repo exists will not open the old repo. |
 | OneDrive `invalid_request` / redirect mismatch | Azure redirect URI must exactly match the one shown in Settings (from `CB_ADMIN_URL`). |
