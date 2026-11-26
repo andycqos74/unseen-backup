@@ -20,8 +20,32 @@
 <div id="kopia-sync-card" hidden>
 <h2>Off-site copy (Kopia)</h2>
 <div class="form-card">
-  <p>The Kopia repository is mirrored to <code id="ks-target"></code> every <span id="ks-every"></span>.</p>
-  <p id="ks-status" class="muted"></p>
+  <div id="ks-active" hidden>
+    <p>The Kopia repository is mirrored to <code id="ks-target"></code> every <span id="ks-every"></span>.
+      The copy is the same encrypted repository — the provider never sees your files.</p>
+    <p id="ks-status" class="muted"></p>
+    <p id="ks-rclone" class="muted" hidden></p>
+    <div class="row" id="ks-cloud-btns" hidden>
+      <button class="btn" type="button" onclick="kcSync()">Copy now</button>
+      <button class="btn" type="button" onclick="kcTest()">Test connection</button>
+      <button class="btn danger" type="button" onclick="kcDisconnect()">Disconnect</button>
+    </div>
+    <p id="ks-env-note" class="muted" hidden>Configured with <code>CB_KOPIA_SYNC_TO</code> on the server.</p>
+  </div>
+  <form id="kc-form" hidden onsubmit="kcConnect(event)">
+    <p>Keep a second copy of all Kopia backups in your own cloud account. Uses the same OAuth app as
+      the storage backend below (redirect URI <code id="kc-redirect"></code>); leave the client ID and
+      secret empty to reuse the ones saved there.</p>
+    <div class="row">
+      <label>Provider <select name="provider"><option value="onedrive">OneDrive</option><option value="gdrive">Google Drive</option></select></label>
+      <label>Folder <input name="folder" placeholder="unseen-backup-kopia"></label>
+    </div>
+    <div class="row">
+      <label>Client ID (optional) <input name="client_id" autocomplete="off"></label>
+      <label>Client secret (optional) <input name="client_secret" type="password" autocomplete="off"></label>
+    </div>
+    <button class="btn primary" type="submit">Connect and start copying</button>
+  </form>
 </div>
 </div>
 
@@ -128,11 +152,22 @@ async function load() {
   if (d.kopia_sync) {
     const k = d.kopia_sync;
     el('kopia-sync-card').hidden = false;
-    el('ks-target').textContent = k.target;
-    el('ks-every').textContent = k.interval;
-    el('ks-status').textContent = k.last_error
-      ? 'Last attempt ' + fmtTime(k.last_run) + ' FAILED: ' + k.last_error
-      : (k.last_ok ? 'Last successful copy: ' + fmtTime(k.last_ok) : 'Not copied yet (first copy runs a few minutes after start).');
+    const active = !!k.target;
+    el('ks-active').hidden = !active;
+    el('kc-form').hidden = active;
+    el('kc-redirect').textContent = location.origin + '/api/admin/storage/oauth/callback';
+    api('GET', '/api/admin/storage').then(st => { if (st.redirect_url) el('kc-redirect').textContent = st.redirect_url; }).catch(() => {});
+    if (active) {
+      el('ks-target').textContent = k.target;
+      el('ks-every').textContent = k.interval;
+      el('ks-status').textContent = k.last_error
+        ? 'Last attempt ' + fmtTime(k.last_run) + ' FAILED: ' + k.last_error
+        : (k.last_ok ? 'Last successful copy: ' + fmtTime(k.last_ok) : 'Not copied yet (the first copy starts a few minutes after connecting).');
+      el('ks-cloud-btns').hidden = !!k.from_env;
+      el('ks-env-note').hidden = !k.from_env;
+      el('ks-rclone').hidden = !!k.from_env || k.rclone_running;
+      el('ks-rclone').textContent = k.rclone_running ? '' : 'Cloud connector not running' + (k.rclone_error ? ': ' + k.rclone_error : '');
+    }
   }
   el('st-snaps').textContent = d.stats.Snapshots;
   el('st-blobs').textContent = d.stats.Blobs;
@@ -277,5 +312,33 @@ document.getElementById('pw-form').addEventListener('submit', async (e) => {
   } catch (err) { toast(err.message); }
 });
 load();
+async function kcConnect(e) {
+  e.preventDefault();
+  const f = el('kc-form');
+  try {
+    const r = await api('POST', '/api/admin/kopia/cloud/connect', {
+      provider: f.provider.value, folder: f.folder.value.trim(),
+      client_id: f.client_id.value.trim(), client_secret: f.client_secret.value.trim()});
+    location.href = r.auth_url;
+  } catch (err) { toast(err.message); }
+}
+async function kcTest() {
+  const r = await api('POST', '/api/admin/kopia/cloud/test', {});
+  toast(r.ok ? 'Connection OK' : 'Connection failed: ' + r.error);
+}
+async function kcSync() {
+  await api('POST', '/api/admin/kopia/cloud/sync', {});
+  toast('Copy started — the status updates when it finishes');
+}
+async function kcDisconnect() {
+  if (!confirm('Stop copying to this account? The copy already there is kept.')) return;
+  await api('DELETE', '/api/admin/kopia/cloud');
+  location.reload();
+}
+{
+  const q = new URLSearchParams(location.search);
+  if (q.get('kopia_cloud') === 'connected') toast('Connected — the first copy starts shortly');
+  if (q.get('kopia_cloud_error')) toast('Could not connect: ' + q.get('kopia_cloud_error'));
+}
 </script>
 {{end}}

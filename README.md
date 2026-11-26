@@ -75,6 +75,8 @@ compressed and deduplicated, stored on the server's local storage.
 
 > **Deploying the whole platform** (backup + Kopia + remote access behind a
 > Cloudflare Tunnel)? Start with [docs/full-stack.md](docs/full-stack.md).
+> For a worked home-server + Windows 11 example, see
+> [docs/home-server-windows11.md](docs/home-server-windows11.md).
 
 ## Quick start — server
 

@@ -27,7 +27,7 @@ CB_PUBLIC_URL=https://agents.example.com:8443
 CB_ADMIN_LISTEN=:8444
 CB_ADMIN_URL=https://backup-admin.example.com
 CB_KOPIA_PASSWORD=<openssl rand -hex 32>          # Vaultwarden — unrecoverable if lost
-CB_KOPIA_SYNC_TO="s3 --bucket=… --endpoint=… --prefix=unseen/"   # optional off-site copy
+CB_KOPIA_SYNC_TO="s3 --bucket=… --endpoint=… --prefix=unseen/"   # optional off-site copy (or use OneDrive/Google Drive from Settings)
 AWS_ACCESS_KEY_ID=… ; AWS_SECRET_ACCESS_KEY=…      # for the off-site copy (Vaultwarden)
 CB_MESH_URL=https://mesh.example.com
 CB_MESH_API_URL=https://meshcentral:443

@@ -91,7 +91,33 @@ Set `CB_KOPIA_SYNC_TO` and the server mirrors the repository there with
 encrypted repository — the storage provider never sees plaintext — and
 *Settings → Off-site copy* shows the last result.
 
-Any S3-compatible store (Backblaze B2, Cloudflare R2, Wasabi, AWS):
+### OneDrive or Google Drive (from the GUI)
+
+*Settings → Off-site copy (Kopia)*: pick OneDrive or Google Drive and a
+folder, then **Connect and start copying**. It uses the same OAuth app and
+redirect URI as the storage backend section (leave client ID/secret empty
+to reuse those), but it is a separate setting: the built-in engine's storage
+is not changed. **Test connection**, **Copy now** and **Disconnect** are on
+the same card, with the last result.
+
+How it works: at connect the server writes `/data/kopia/rclone.conf`
+(0600) with the account's token, once — from then on rclone owns the token
+(Microsoft rotates refresh tokens; rclone saves the new one). One long-lived
+`rclone serve webdav` on loopback (`127.0.0.1:51516`) serves the cloud
+folder, and `kopia repository sync-to webdav` copies to it. Uploads are not
+cached locally, so a finished copy is really in the cloud.
+
+Google Drive uses the `drive.file` scope: the app (and so the copy) can only
+see files it created itself. OneDrive needs `Files.ReadWrite` (already
+requested) and works for personal and business drives.
+
+If the connection breaks (password change, revoked consent), the card shows
+the error; connect again to issue a new token.
+
+### S3-compatible storage (by environment)
+
+`CB_KOPIA_SYNC_TO` takes precedence over a GUI destination. Any
+S3-compatible store (Backblaze B2, Cloudflare R2, Wasabi, AWS):
 
 ```bash
 CB_KOPIA_SYNC_TO="s3 --bucket=my-backups --endpoint=s3.eu-central-003.backblazeb2.com --prefix=unseen/"
@@ -111,8 +137,12 @@ s3 --bucket=… --endpoint=… --prefix=…` with `CB_KOPIA_PASSWORD`, then
 ## Notes and limits
 
 - **The primary repository is on the server's disk.** The off-site copy
-  above covers losing the server. An S3-backed *primary* repository isn't
-  wired up.
+  above covers losing the server. Keeping the *primary* repository in
+  OneDrive/Google Drive/S3 (to save server disk) isn't wired up: it would
+  also make browsing and restores slower, since every read goes to the cloud.
+- The OneDrive/Google Drive token handoff to rclone was tested against a fake
+  OAuth/Graph server and the copy against a local rclone remote; it has not
+  been run against a real Microsoft or Google account here.
 - **Existing clients need the new agent.** Agents don't self-update; a client
   gets Kopia (and the MeshAgent bootstrapper) after reinstalling the
   agent from the enroll dialog.
