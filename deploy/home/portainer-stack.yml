@@ -87,7 +87,11 @@ services:
     image: cloudflare/cloudflared:latest
     container_name: cloudflared
     restart: unless-stopped
-    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN}
+    # Token via the environment, not --token: a value with stray spaces or a
+    # pasted "--token" breaks the argument list ("accepts only one argument").
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN}
     depends_on: [backup-server, meshcentral]
 
   ddns:
