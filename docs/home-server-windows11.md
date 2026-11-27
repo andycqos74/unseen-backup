@@ -64,11 +64,82 @@ push to `main` and publishes them to GHCR as
 `ghcr.io/andycqos74/unseen-backup-server:main` (also `:latest` and a
 `sha-<7 chars>` tag per build).
 
-1. **Data folder.** Create it on the big disk:
+1. **Data folder on the right disk.** Everything lands here: the database,
+   the TLS certificate and the whole Kopia repository, so it grows with every
+   client you back up. Put it on your big data disk, not the OS disk. Run
+   these in an SSH session on the server.
+
+   **a. See which disks you have and where they're mounted:**
 
    ```bash
-   sudo mkdir -p /srv/unseen-backup/data
+   lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL,MOUNTPOINTS
    ```
+
+   ```
+   NAME     SIZE TYPE FSTYPE LABEL MOUNTPOINTS
+   sda      240G disk
+   ├─sda1     1G part vfat         /boot/efi
+   └─sda2   239G part ext4         /
+   sdb      3.6T disk
+   └─sdb1   3.6T part ext4   data  /mnt/data
+   ```
+
+   Here `sda` is the OS disk and `sdb1` (3.6 TB) is mounted at `/mnt/data`.
+   Older Ubuntu shows the column as `MOUNTPOINT`; use that name if
+   `MOUNTPOINTS` gives an error. Docker's own volumes live under
+   `/var/lib/docker` on the OS disk, which is why this guide uses a folder
+   you choose rather than a named volume.
+
+   **b. Check free space on each mounted filesystem:**
+
+   ```bash
+   df -h -x tmpfs -x devtmpfs -x overlay -x squashfs
+   ```
+
+   Pick the filesystem with the most **Avail**. As a rough guide, allow about
+   1.5 × the data you'll back up, for Kopia's version history.
+
+   **c. Make sure it mounts again after a reboot.** If the disk isn't
+   mounted, or was mounted by hand, the server would quietly write to the OS
+   disk after a restart. Check that it has an entry in `/etc/fstab`:
+
+   ```bash
+   findmnt --fstab --target /mnt/data     # prints a line = it's in fstab
+   ```
+
+   If it prints nothing, add it by UUID (find it with
+   `lsblk -o NAME,UUID,FSTYPE,MOUNTPOINTS`):
+
+   ```bash
+   echo 'UUID=<the-uuid>  /mnt/data  ext4  defaults,nofail  0  2' | sudo tee -a /etc/fstab
+   sudo systemctl daemon-reload
+   sudo mount -a && findmnt /mnt/data     # no errors, and it shows the disk
+   ```
+
+   Use the `FSTYPE` from `lsblk` in place of `ext4`. A brand-new disk with no
+   `FSTYPE` must be partitioned and formatted first (for example
+   `sudo mkfs.ext4 -L data /dev/sdb1` after creating the partition with
+   `sudo fdisk /dev/sdb`). **Formatting erases the disk**, so check the
+   device name twice against the size in `lsblk`.
+
+   **d. Create the data folder on that disk:**
+
+   ```bash
+   sudo mkdir -p /mnt/data/unseen-backup
+   sudo chown root:root /mnt/data/unseen-backup
+   sudo chmod 700 /mnt/data/unseen-backup
+   df -h /mnt/data/unseen-backup          # must show the big disk, not /
+   ```
+
+   The server container runs as root, so root ownership is correct, and
+   `700` keeps the Kopia repository and certificate key away from other
+   users on the box. Avoid NTFS/exFAT disks: they can't hold Linux
+   permissions properly. Use ext4 or XFS.
+
+   **e. Point the stack at it.** In Step 4, set
+   `CB_DATA_DIR=/mnt/data/unseen-backup` (the default is
+   `/srv/unseen-backup/data`). The rest of this guide writes
+   `/srv/unseen-backup/data`; read that as your own path.
 
 2. **Registry login.** The repo is private, so its images are too. On GitHub
    create a **classic personal access token** with only the
