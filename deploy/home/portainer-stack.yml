@@ -1,19 +1,22 @@
 # Unseen Backup: home server stack for Portainer (prebuilt images, no clone,
-# no build). Server + Cloudflare Tunnel (admin GUI) + Cloudflare DDNS (agent
-# hostname). Walkthrough: docs/home-server-windows11.md.
+# no build). Backup server with the Kopia engine, MeshCentral remote access,
+# Cloudflare Tunnel (both admin UIs) and Cloudflare DDNS (agent hostname).
+# Walkthrough: docs/home-server-windows11.md; MeshCentral: docs/remote-access.md.
 #
 # Portainer → Stacks → Add stack → Web editor: paste this file, then under
 # "Environment variables" use "Load variables from .env file" with
 # deploy/home/stack.env.example filled in (or add the variables by hand).
 #
 # Before deploying:
-#   - create the data folder on the host (e.g. sudo mkdir -p /srv/unseen-backup/data)
+#   - create the data folders on the host (CB_DATA_DIR and MESH_DATA_DIR)
 #   - the images are private while the repo is: add ghcr.io under
 #     Portainer → Registries (GitHub username + a token with read:packages)
 #
-# Ports: 8443 (agents) and 51515 (Kopia) are forwarded on the router.
-# 8444 (admin GUI) stays on 127.0.0.1; cloudflared reaches it over the stack
-# network as https://backup-server:8444.
+# Ports forwarded on the router: 8443 (backup agents), 51515 (Kopia) and
+# 4443 (MeshAgent). The two GUIs are never forwarded: cloudflared reaches
+# them over the stack network as https://backup-server:8444 and
+# https://meshcentral:443 (both "No TLS Verify"). They are also published on
+# 127.0.0.1 (8444, 8445) for an SSH-tunnel fallback.
 
 services:
   backup-server:
@@ -30,6 +33,13 @@ services:
       CB_ADMIN_LISTEN: ${CB_ADMIN_LISTEN:-:8444}
       CB_ADMIN_URL: ${CB_ADMIN_URL}
       CB_KOPIA_PASSWORD: ${CB_KOPIA_PASSWORD}
+      # MeshCentral hand-off (Desktop / Terminal / Files buttons)
+      CB_MESH_URL: https://${MESH_UI_HOST}
+      CB_MESH_API_URL: https://meshcentral:443
+      CB_MESH_AGENT_URL: https://${MESH_AGENT_HOST}:${MESH_AGENT_PORT:-4443}
+      CB_MESH_LOGIN_KEY: ${MESH_LOGIN_KEY}
+      CB_MESH_USER: ${CB_MESH_USER:-admin}
+      CB_MESH_GROUP: ${CB_MESH_GROUP:-}
       TZ: ${TZ:-Europe/London}
     volumes:
       # Absolute host path: a Portainer stack has no folder of its own, so a
@@ -37,12 +47,52 @@ services:
       # TLS cert (agents pin it), Kopia repository and rclone config.
       - ${CB_DATA_DIR:-/srv/unseen-backup/data}:/data
 
+  meshcentral:
+    image: ghcr.io/ylianst/meshcentral:${MESH_TAG:-1.3.1}
+    container_name: meshcentral
+    restart: unless-stopped
+    ports:
+      - "${MESH_AGENT_PORT:-4443}:${MESH_AGENT_PORT:-4443}"   # MeshAgent (router forward)
+      - "127.0.0.1:8445:443"                                   # UI: local only, reached via the tunnel
+    environment:
+      MESH_AGENT_HOST: ${MESH_AGENT_HOST}
+      MESH_AGENT_PORT: ${MESH_AGENT_PORT:-4443}
+      MESH_UI_HOST: ${MESH_UI_HOST}
+      MESH_LOGIN_KEY: ${MESH_LOGIN_KEY}
+      DYNAMIC_CONFIG: "false"
+      TZ: ${TZ:-Europe/London}
+    # config.json is regenerated from the variables above on every start
+    # (same as deploy/docker-compose.yml): edit the variables, not the file.
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        set -e
+        case "$$MESH_AGENT_HOST" in *.*) ;; *) echo "MESH_AGENT_HOST must be a DNS name with a dot" >&2; exit 1;; esac
+        [ -n "$$MESH_UI_HOST" ] || { echo "MESH_UI_HOST is required" >&2; exit 1; }
+        [ $${#MESH_LOGIN_KEY} -eq 160 ] || { echo "MESH_LOGIN_KEY must be 160 hex characters (openssl rand -hex 80)" >&2; exit 1; }
+        mkdir -p /opt/meshcentral/meshcentral-data
+        jq -n --arg cert "$$MESH_AGENT_HOST" --arg ui "$$MESH_UI_HOST" --arg key "$$MESH_LOGIN_KEY" --argjson aport "$$MESH_AGENT_PORT" \
+          '{settings: {cert: $$cert, port: 443, redirPort: 0, agentPort: $$aport, agentPortTls: true, tlsOffload: false,
+                       LoginCookieEncryptionKey: $$key, SelfUpdate: false, WebRTC: false, AllowFraming: false, AgentPong: 300},
+            domains: {"": {NewAccounts: false, allowedOrigin: [$$ui], minify: true}}}' \
+          > /opt/meshcentral/meshcentral-data/config.json
+        exec /bin/bash /opt/meshcentral/entrypoint.sh
+    volumes:
+      - ${MESH_DATA_DIR:-/srv/unseen-backup/meshcentral}/data:/opt/meshcentral/meshcentral-data
+      - ${MESH_DATA_DIR:-/srv/unseen-backup/meshcentral}/files:/opt/meshcentral/meshcentral-files
+      - ${MESH_DATA_DIR:-/srv/unseen-backup/meshcentral}/backups:/opt/meshcentral/meshcentral-backups
+
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: cloudflared
     restart: unless-stopped
-    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN}
-    depends_on: [backup-server]
+    # Token via the environment, not --token: a value with stray spaces or a
+    # pasted "--token" breaks the argument list ("accepts only one argument").
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN}
+    depends_on: [backup-server, meshcentral]
 
   ddns:
     image: favonia/cloudflare-ddns:latest
@@ -51,6 +101,6 @@ services:
     network_mode: host
     environment:
       CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
-      DOMAINS: ${CB_AGENT_HOST}
+      DOMAINS: ${MESH_AGENT_HOST}
       PROXIED: "false"           # MUST stay grey-cloud: agents pin the server's own cert
       IP6_PROVIDER: none

@@ -14,7 +14,15 @@ async function api(method, url, body) {
     throw new Error('signed out');
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || res.statusText);
+  if (!res.ok) {
+    // statusText is empty over HTTP/2 (e.g. behind Cloudflare), and a proxy's
+    // own error page isn't JSON: always show at least the status code so a
+    // failed request never looks like "nothing happened".
+    const msg = data.error || `${res.status} ${res.statusText || ''}`.trim() +
+      (res.headers.get('content-type')?.includes('json') ? '' : ' (response did not come from the backup server)');
+    console.error(method, url, res.status, data);
+    throw new Error(msg);
+  }
   return data;
 }
 
