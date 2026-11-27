@@ -20,6 +20,7 @@ Placeholders (swap in your own):
 | `example.com` | your domain, DNS hosted on Cloudflare |
 | `agents.example.com` | **agent** hostname: grey cloud, points at your home IP (kept current by DDNS) |
 | `backup-admin.example.com` | **admin** hostname: through the Cloudflare Tunnel + Access |
+| `mesh.example.com` | **MeshCentral** UI hostname: through the Cloudflare Tunnel + Access |
 | `192.168.1.50` | the home server's LAN IP |
 
 ---
@@ -30,12 +31,16 @@ Placeholders (swap in your own):
 |---|---|---|---|
 | **8443** | Agent API (no login page in this mode) | Windows agent | Router port forward, grey-cloud DNS |
 | **51515** | Kopia repository server (same certificate as 8443) | Windows agent (Kopia jobs) | Router port forward |
+| **4443** | MeshCentral agent port (MeshAgent, remote sessions) | MeshAgent on the PC | Router port forward |
 | 8444 | Web GUI + admin API | You | **Tunnel + Access only.** Bound to 127.0.0.1 on the host |
+| 8445 → 443 | MeshCentral UI | You | **Tunnel + Access only.** Bound to 127.0.0.1 on the host |
 
 ```
  Windows 11 PC ──8443 + 51515 (pinned TLS)──▶ router ─▶ backup-server
+     MeshAgent ──4443──────────────────────────▶ router ─▶ meshcentral
                                                           │  Kopia repo on /data/kopia/repo (local disk)
  You (browser) ─▶ Cloudflare Access ─▶ Tunnel ─▶ cloudflared ─▶ backup-server:8444
+                                                              └─▶ meshcentral:443
                                                           │
                                        every 6 h: kopia sync-to ──rclone──▶ OneDrive (encrypted copy)
 ```
@@ -125,20 +130,22 @@ push to `main` and publishes them to GHCR as
    **d. Create the data folder on that disk:**
 
    ```bash
-   sudo mkdir -p /mnt/data/unseen-backup
-   sudo chown root:root /mnt/data/unseen-backup
+   sudo mkdir -p /mnt/data/unseen-backup/data \
+                 /mnt/data/unseen-backup/meshcentral/{data,files,backups}
+   sudo chown -R root:root /mnt/data/unseen-backup
    sudo chmod 700 /mnt/data/unseen-backup
    df -h /mnt/data/unseen-backup          # must show the big disk, not /
    ```
 
-   The server container runs as root, so root ownership is correct, and
+   Both containers run as root, so root ownership is correct, and
    `700` keeps the Kopia repository and certificate key away from other
    users on the box. Avoid NTFS/exFAT disks: they can't hold Linux
    permissions properly. Use ext4 or XFS.
 
    **e. Point the stack at it.** In Step 4, set
-   `CB_DATA_DIR=/mnt/data/unseen-backup` (the default is
-   `/srv/unseen-backup/data`). The rest of this guide writes
+   `CB_DATA_DIR=/mnt/data/unseen-backup/data` and
+   `MESH_DATA_DIR=/mnt/data/unseen-backup/meshcentral` (the defaults are under
+   `/srv/unseen-backup`). The rest of this guide writes
    `/srv/unseen-backup/data`; read that as your own path.
 
 2. **Registry login.** The repo is private, so its images are too. On GitHub
@@ -162,9 +169,17 @@ push to `main` and publishes them to GHCR as
    - `backup-admin` . `example.com`
    - Service **HTTPS**, URL **`backup-server:8444`**
    - Additional settings → TLS → **No TLS Verify: ON**
-3. **Access → Applications → Add → Self-hosted**: domain
-   `backup-admin.example.com`, policy **Allow → Emails →** your email.
-   Set this up before starting the stack.
+
+   Add a second one for MeshCentral:
+   - `mesh` . `example.com`
+   - Service **HTTPS**, URL **`meshcentral:443`**
+   - Additional settings → TLS → **No TLS Verify: ON**
+3. **Access → Applications → Add → Self-hosted**: add **both**
+   `backup-admin.example.com` and `mesh.example.com` to the same application,
+   policy **Allow → Emails →** your email. One application means one sign-in
+   covers both, so the GUI's Desktop / Terminal / Files buttons don't bounce
+   off a second Access login. Set this up before starting the stack: the
+   first visitor to MeshCentral becomes its administrator.
 4. **My Profile → API Tokens → Create Token → "Edit zone DNS"** for your zone.
    Copy it for DDNS.
 
@@ -172,16 +187,16 @@ push to `main` and publishes them to GHCR as
 
 ## Step 4. Secrets and the Portainer stack
 
-Generate the Kopia repository password and **save it in Vaultwarden now**.
-If you lose it, every Kopia backup is unreadable, including the OneDrive copy.
+Generate two secrets and **save both in Vaultwarden now**:
 
 ```bash
-openssl rand -hex 32
+openssl rand -hex 32     # CB_KOPIA_PASSWORD: lose it and every Kopia backup is unreadable
+openssl rand -hex 80     # MESH_LOGIN_KEY: master key for MeshCentral sign-in
 ```
 
 1. Copy [`deploy/home/stack.env.example`](../deploy/home/stack.env.example)
-   to your PC and fill it in: your hostnames, LAN IP, the Kopia password and
-   the two Cloudflare tokens from Step 3. Don't commit the filled-in copy.
+   to your PC and fill it in: your hostnames, LAN IP, data folders, the two
+   secrets above and the two Cloudflare tokens from Step 3. Don't commit the filled-in copy.
 2. Portainer → **Stacks → Add stack**, name `unseen-backup`, **Web editor**:
    paste [`deploy/home/portainer-stack.yml`](../deploy/home/portainer-stack.yml)
    unchanged.
@@ -189,17 +204,19 @@ openssl rand -hex 32
    filled-in file. Check every value arrived.
 4. **Deploy the stack.**
 
-The stack is the server from `deploy/docker-compose.yml` using the prebuilt
-image, with a bind mount to `/srv/unseen-backup/data` (override with
-`CB_DATA_DIR`), MeshCentral left out (optional, see
-[remote-access.md](remote-access.md)), and the tunnel and DDNS containers
-added. `ghcr.io/andycqos74/...` is hard-coded; if you fork the repo, change
+The stack is `deploy/docker-compose.yml` (server and MeshCentral) using the
+prebuilt server image, with bind mounts to the folders from Step 2
+(`CB_DATA_DIR`, `MESH_DATA_DIR`), and the tunnel and DDNS containers added.
+To leave remote access out, delete the `meshcentral` service, the
+`CB_MESH_*` lines and `meshcentral` from cloudflared's `depends_on`. `ghcr.io/andycqos74/...` is hard-coded; if you fork the repo, change
 the owner in the `image:` line.
 
 **Check** in Portainer → Containers → *container* → **Logs**:
 - `backup-server`: the certificate fingerprint, and
   `kopia: repository … repository server on :51515`;
 - `cloudflared`: `Registered tunnel connection`;
+- `meshcentral`: a line saying its HTTPS server is running, and no config errors
+  (the first start downloads agent binaries and takes a minute or two);
 - `cloudflare-ddns`: the A record it set for `agents.example.com`.
 
 Or from a shell on the server:
@@ -219,9 +236,14 @@ Or from a shell on the server:
 1. Browse to `https://backup-admin.example.com` → Cloudflare Access PIN →
    the app's **setup** page. Create the admin account (long, unique password).
 2. **Settings** → note the **TLS certificate fingerprint**. It must match the log.
-3. Router → **Port forwarding**: TCP **8443** → `192.168.1.50:8443` and
-   TCP **51515** → `192.168.1.50:51515`. Do **not** forward 8444.
-4. Test from **outside** (phone on 4G, Wi-Fi off, or any external host):
+3. Browse to `https://mesh.example.com` and **create the first MeshCentral
+   account** straight away (it becomes site administrator; new accounts are
+   then disabled). Use the name you set in `CB_MESH_USER` and turn on 2FA.
+   Then **My Devices → Add Device Group**, "Manage using a software agent".
+4. Router → **Port forwarding** to `192.168.1.50`: TCP **8443**, TCP
+   **51515** and TCP **4443**, each to the same port. Do **not** forward
+   8444 or 8445.
+5. Test from **outside** (phone on 4G, Wi-Fi off, or any external host):
 
 ```bash
 curl -sk -o /dev/null -w '%{http_code}\n' https://agents.example.com:8443/login   # 404 = no GUI exposed (good)
@@ -312,9 +334,13 @@ If it's lost, the fingerprint changes and every agent must be re-enrolled.
    Get-Service CentralBackupAgent                         # Running
    Test-NetConnection agents.example.com -Port 8443       # TcpTestSucceeded : True
    Test-NetConnection agents.example.com -Port 51515      # TcpTestSucceeded : True
+   Test-NetConnection agents.example.com -Port 4443       # TcpTestSucceeded : True
    ```
 
-   The PC shows under **Clients** within seconds.
+   The PC shows under **Clients** within seconds. About 20 seconds after
+   that the agent installs MeshAgent by itself; the client page's
+   **Desktop / Terminal / Files** buttons then open the PC in MeshCentral
+   (see [remote-access.md](remote-access.md)).
 
 ---
 
