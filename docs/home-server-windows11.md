@@ -313,8 +313,22 @@ If it's lost, the fingerprint changes and every agent must be re-enrolled.
    This enrolls the PC and starts the **`CentralBackupAgent`** service. On
    first connect the agent gets its own Kopia login from the server and
    downloads the Kopia binary from the server, with its SHA-256 checked.
-   MeshAgent is skipped because remote access isn't configured. State lives in
-   `C:\ProgramData\BackupAgent\`.
+   State lives in `C:\ProgramData\BackupAgent\`.
+
+   **"service CentralBackupAgent is already installed"?** An older agent is on
+   the PC. Remove it first (Administrator PowerShell). Don't skip the rename:
+   the installer reuses any credentials it finds there and would stay
+   enrolled with the old server.
+
+   ```powershell
+   (Get-CimInstance Win32_Service -Filter "Name='CentralBackupAgent'").PathName   # where the old exe is
+   Stop-Service CentralBackupAgent -ErrorAction SilentlyContinue
+   sc.exe delete CentralBackupAgent
+   Rename-Item C:\ProgramData\BackupAgent BackupAgent.old    # old credentials/jobs, kept just in case
+   ```
+
+   Then run `.\backup-agent-installer.exe install` again. There's no in-place
+   upgrade from an agent enrolled with a different server.
 
 3. **Same home network as the server?** The PC will look up `agents.example.com`
    and get your *public* IP. Many routers can't loop that back. Pin it to the
